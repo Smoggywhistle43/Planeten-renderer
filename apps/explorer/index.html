@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Planeten-Renderer — Stufe 01</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      canvas { display: block; width: 100%; height: 100%; }
+
+      #overlay {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        padding: 10px 14px;
+        font: 12px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        color: #d8dee9;
+        background: rgba(8, 10, 14, 0.72);
+        border: 1px solid rgba(216, 222, 233, 0.14);
+        border-radius: 6px;
+        white-space: pre;
+        pointer-events: none;
+        min-width: 30ch;
+      }
+      #overlay .warn { color: #ebcb8b; }
+      #overlay .bad { color: #bf616a; }
+      #overlay .ok { color: #a3be8c; }
+      #overlay h1 {
+        font: inherit;
+        font-weight: 600;
+        margin: 0 0 6px;
+        color: #88c0d0;
+        letter-spacing: 0.04em;
+      }
+
+      #help {
+        position: fixed;
+        bottom: 12px;
+        left: 12px;
+        padding: 8px 12px;
+        font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
+        color: #8b93a1;
+        background: rgba(8, 10, 14, 0.6);
+        border-radius: 6px;
+        white-space: pre;
+        pointer-events: none;
+      }
+
+      #fatal {
+        position: fixed;
+        inset: 0;
+        display: none;
+        place-content: center;
+        padding: 10vh 8vw;
+        font: 14px/1.7 ui-monospace, Menlo, Consolas, monospace;
+        color: #bf616a;
+        background: #05070a;
+        white-space: pre-wrap;
+      }
+      #fatal.shown { display: grid; }
+    </style>
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+    <div id="overlay"><h1>PLANETEN-RENDERER 01</h1><span id="stats">initialisiere …</span></div>
+    <div id="help">Leertaste Flug pausieren   R Flug neu starten   [ ] Höhe   T Neigung   L LOD-Farben   H Höhenfeld   Maus ziehen: umsehen</div>
+    <div id="fatal"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

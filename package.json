@@ -1,0 +1,38 @@
+{
+  "name": "planeten-renderer",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @planet/explorer dev",
+    "build": "pnpm -r --filter=!@planet/explorer build && pnpm --filter @planet/explorer build",
+    "typecheck": "tsc -b tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "check:deps": "node scripts/check-deps.mjs",
+    "check": "pnpm check:deps && pnpm lint && pnpm typecheck && pnpm test",
+    "acceptance": "node scripts/acceptance.mjs",
+    "acceptance:fast": "node scripts/acceptance.mjs --fast"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.10.5",
+    "@vitest/browser": "^3.2.7",
+    "eslint": "^9.39.5",
+    "playwright": "^1.62.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
