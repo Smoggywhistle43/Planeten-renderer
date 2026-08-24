@@ -641,10 +641,29 @@ async function main() {
       log(`checkpoint ${altitude.toExponential(1)} m …`);
       await page.evaluate((a) => window.__planet.setAltitude(a), altitude);
 
-      // Descent frames first, so the tree grows the way it would in flight
-      // rather than being teleported into place.
-      await stepFrames(page, DESCENT_FRAMES, 0);
-      await stepFrames(page, SETTLE_FRAMES, 0);
+      // Count from the moment the camera arrives, not after a warm-up: the
+      // settle time is how long the tree needs once the camera stops *there*,
+      // and measuring it after sixty quiet frames would always report one.
+      // This is what predicts pop-in — a peak build count says only that the
+      // ceiling was touched once.
+      const settle = await page.evaluate(async (limit) => {
+        for (let frame = 1; frame <= limit; frame++) {
+          window.__planet.renderFrame(0);
+          await window.__planet.pump();
+          const s = window.__planet.stats();
+          if (
+            s.buildsStartedThisFrame === 0 &&
+            s.buildsPending === 0 &&
+            s.buildsDeferredThisFrame === 0
+          ) {
+            return { frames: frame, settled: true, depth: s.maxSelectedDepth };
+          }
+        }
+        return { frames: limit, settled: false, depth: window.__planet.stats().maxSelectedDepth };
+      }, DESCENT_FRAMES + SETTLE_FRAMES);
+
+      // A few more frames so the image is stable before it is measured.
+      await stepFrames(page, 8, 0);
 
       const probe = await renderAndProbe(page);
       const silhouette = await page.evaluate(() => {
@@ -667,6 +686,11 @@ async function main() {
         frameMs: stats.frameMs,
         buildsStartedThisFrame: stats.buildsStartedThisFrame,
         peakBuildsPerFrame: stats.peakBuildsPerFrame,
+        settleFrames: settle.frames,
+        settled: settle.settled,
+        framesAtBudget: stats.framesAtBudget,
+        framesTotal: stats.framesTotal,
+        buildsTotal: stats.buildsTotal,
         budget: stats.budget,
         selectedNodes: stats.selectedNodes,
         residentTiles: stats.residentTiles,
@@ -732,6 +756,12 @@ async function main() {
               `${altitude.toExponential(1)} m — the silhouette is faceted`,
           );
         }
+      }
+      if (!settle.settled) {
+        report.failures.push(
+          `the tree never settled at ${altitude.toExponential(1)} m within ${SETTLE_FRAMES} ` +
+            'frames — that is continuous pop-in, not a converging LOD',
+        );
       }
       if (stats.everExceededBudget || stats.peakBuildsPerFrame > stats.budget) {
         report.failures.push(
@@ -913,7 +943,18 @@ async function main() {
       meanMs: frameTimes.reduce((a, b) => a + b, 0) / Math.max(1, frameTimes.length),
       maxMs: Math.max(0, ...frameTimes),
     };
-    report.budget = { peakBuildsPerFrame: peakBuilds, configured: report.checkpoints[0]?.budget ?? null };
+    const lastCheckpoint = report.checkpoints[report.checkpoints.length - 1];
+  report.budget = {
+    peakBuildsPerFrame: peakBuilds,
+    configured: report.checkpoints[0]?.budget ?? null,
+    framesAtBudget: lastCheckpoint?.framesAtBudget ?? null,
+    framesTotal: lastCheckpoint?.framesTotal ?? null,
+    buildsTotal: lastCheckpoint?.buildsTotal ?? null,
+    worstSettleFrames: Math.max(0, ...report.checkpoints.map((c) => c.settleFrames ?? 0)),
+    note:
+      'Die Spitze sagt nur, dass die Decke einmal berührt wurde. Aussagekräftig ' +
+      'sind der Anteil der Frames am Anschlag und die Einschwingzeit.',
+  };
     report.compat = {
       swizzleShimApplied: await page.evaluate(() => window.__swizzleShimApplied === true),
       userAgent: await page.evaluate(() => navigator.userAgent),
@@ -979,8 +1020,8 @@ function renderSummary(report) {
   }
   lines.push('## Kameraflug');
   lines.push('');
-  lines.push('| Höhe (m) | Radius ist/soll (px) | Abw. | Tiles | Tiefe | Fehler (px) | Builds/Frame | Löcher | Speckle | Silhouette | ms |');
-  lines.push('|---|---|---|---|---|---|---|---|---|---|---|');
+  lines.push('| Höhe (m) | Radius ist/soll (px) | Abw. | Tiles | Tiefe | Fehler (px) | Builds/Frame | Einschwingen | Löcher | Speckle | Silhouette | ms |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
   for (const c of report.checkpoints) {
     const r = c.probe?.empty
       ? 'leer'
@@ -990,7 +1031,7 @@ function renderSummary(report) {
         c.radiusErrorFraction === undefined ? '—' : `${(c.radiusErrorFraction * 100).toFixed(2)}%`
       } | ${c.selectedNodes} | ${c.maxSelectedDepth} | ${c.maxSelectedErrorPixels.toFixed(2)} | ${
         c.peakBuildsPerFrame
-      }/${c.budget} | ${c.probe?.holes ?? '—'} | ${
+      }/${c.budget} | ${c.settled ? `${c.settleFrames} Frames` : 'NICHT ERREICHT'} | ${c.probe?.holes ?? '—'} | ${
         c.probe?.speckleFraction === undefined ? '—' : `${(c.probe.speckleFraction * 100).toFixed(3)}%`
       } | ${describeSilhouette(c.silhouette)} | ${c.frameMs.toFixed(1)} |`,
     );
@@ -1043,6 +1084,23 @@ function renderSummary(report) {
       `- float32 (Kontrolle): ${report.control.stepsThatChangedTheImage}/${report.control.stepsCompared} Schritte ändern das Bild`,
     );
   }
+  lines.push('');
+  lines.push('## Budget');
+  lines.push('');
+  lines.push(
+    `- Spitze ${report.budget?.peakBuildsPerFrame} von ${report.budget?.configured} erlaubt`,
+  );
+  lines.push(
+    `- am Anschlag: ${report.budget?.framesAtBudget} von ${report.budget?.framesTotal} Frames ` +
+      `(${((100 * (report.budget?.framesAtBudget ?? 0)) / Math.max(1, report.budget?.framesTotal ?? 1)).toFixed(1)} %)`,
+  );
+  lines.push(`- Bauten insgesamt über den Lauf: ${report.budget?.buildsTotal}`);
+  lines.push(
+    `- längste Einschwingzeit nach Anhalten der Kamera: ${report.budget?.worstSettleFrames} Frames ` +
+      `(${((report.budget?.worstSettleFrames ?? 0) / 60).toFixed(2)} s bei 60 fps)`,
+  );
+  lines.push('');
+  lines.push(`> ${report.budget?.note}`);
   lines.push('');
   lines.push('## Frametime');
   lines.push('');

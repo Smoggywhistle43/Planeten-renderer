@@ -95,8 +95,23 @@ export class Overlay {
           `   Spitze ${this.worstBuildsPerFrame}` +
           (this.budgetBreached ? span('bad', '  BUDGET GERISSEN') : ''),
       ),
+      // A peak on its own reads as "permanently at the ceiling". The duty
+      // cycle is the number that says how often it is actually there.
+      row(
+        '  am Anschlag',
+        `${stats.framesAtBudget} von ${stats.framesTotal} Frames (${(
+          (100 * stats.framesAtBudget) /
+          Math.max(1, stats.framesTotal)
+        ).toFixed(1)} %)`,
+      ),
+      row(
+        '  eingeschwungen',
+        stats.framesSinceBuildActivity > 0
+          ? span('ok', `seit ${stats.framesSinceBuildActivity} Frames ruhig`)
+          : span('warn', 'baut gerade'),
+      ),
       row('  offen', `${stats.buildsPending} laufend, ${stats.buildsDeferredThisFrame} zurückgestellt`),
-      row('  fertig', `${stats.buildsCompletedThisFrame} diesen Frame, ${stats.discardedBuilds} verworfen`),
+      row('  gesamt', `${stats.buildsTotal} gebaut, ${stats.discardedBuilds} verworfen`),
       '',
       row('tiles', `${stats.selectedNodes} gezeichnet, ${stats.residentTiles} geladen`),
       row('dreiecke', `${(stats.triangles / 1000).toFixed(0)}k`),

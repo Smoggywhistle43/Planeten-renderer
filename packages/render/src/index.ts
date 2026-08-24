@@ -61,10 +61,13 @@ export {
 } from './planet-material.ts';
 
 export {
+  assertHighPrecisionModelView,
   assertReversedDepth,
   createPlanetRenderer,
   describeDepth,
+  describeModelViewPrecision,
   type DepthConfiguration,
+  type ModelViewPrecision,
   type PlanetRendererOptions,
 } from './renderer.ts';
 

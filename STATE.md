@@ -57,7 +57,7 @@ Beide rufen dasselbe Node-Objekt.
 | `lod-scheduler.ts` | Auswahl mit harter Obergrenze an Knotenbauten pro Frame (**Standard 2**), Prioritätswarteschlange nach Bildschirmfehler, asynchroner Bau, Verwerfen verspäteter Ergebnisse, Freigabe ungenutzter Teilbäume |
 | `planet-camera.ts` | float64-Position, `three`-Kamera bleibt auf (0,0,0) |
 | `planet-material.ts` | TSL-Material, ein Material für alle Tiles |
-| `renderer.ts` | `WebGPURenderer` mit `reversedDepthBuffer`, plus Zusicherung |
+| `renderer.ts` | `WebGPURenderer` mit `reversedDepthBuffer` und `highPrecision`, plus Zusicherungen für beides |
 | `post.ts` | `RenderPipeline` über den TSL-Node-Stack |
 | `planet.ts` | setzt alles zusammen, platziert Tiles kamerarelativ |
 
@@ -83,6 +83,9 @@ Die vier Regeln aus dem Handoff, und wo sie im Code stehen:
    nach float32.
 3. **Kamera auf (0,0,0).** `PlanetCamera.update` setzt die `three`-Kamera bei
    jedem Frame auf den Ursprung; die View-Matrix ist eine reine Rotation.
+   Das Produkt aus View- und Objektmatrix entsteht auf der CPU in float64 und
+   wird einmal verengt (`renderer.highPrecision`), nicht aus zwei einzeln
+   verengten Matrizen im Shader — siehe Abweichung 2.
 4. **Rebasing** bei 4096 m Drift, `Frame.update`.
 
 Reversed-Z läuft über `reversedDepthBuffer: true`. Three r185 setzt damit die
@@ -131,11 +134,11 @@ vier Bilder. `artifacts/` selbst ist Arbeitsverzeichnis und nicht versioniert.
 
 | # | Kriterium | Stand |
 |---|---|---|
-| 1 | `pnpm test` grün, Golden Tests bestehen | **erfüllt** — 161 Tests: 142 in Node, 19 gegen ein echtes WebGPU-Gerät |
+| 1 | `pnpm test` grün, Golden Tests bestehen | **erfüllt** — 176 Tests: 155 in Node, 21 gegen ein echtes WebGPU-Gerät |
 | 2 | `pnpm check:deps` bestätigt: `core` ohne `three` | **erfüllt** |
 | 3 | Graue Kugel, Radius 6.371e6 m | **erfüllt** — Silhouettenradius gegen die Projektion einer 6.371e6-m-Kugel: Abweichung ≤ 0.04 % bei 1e7 m, ≤ 4 % nur dort, wo die Scheibe wenige Pixel groß ist. Ein Kreisfit durch die Kontur liegt auf 0.24–0.32 px |
 | 4 | Flug 1e9 → 1e3 m ohne Zittern, ohne Z-Fighting | **erfüllt** — siehe unten |
-| 5 | Overlay zeigt Knotenbauten pro Frame, Wert ≤ Budget | **erfüllt** — Spitze 2 bei Budget 2 über den ganzen Flug |
+| 5 | Overlay zeigt Knotenbauten pro Frame, Wert ≤ Budget | **erfüllt** — Spitze 2 bei Budget 2, davon 0.2 % der Frames am Anschlag; Einschwingzeit ≤ 12 Frames |
 | 6 | Overlay zeigt Frametime, 60 fps auf dem M5 Air bei dpr 2 | **offen** — hier nicht entscheidbar, siehe offene Punkte |
 
 ### Gemessene Werte des letzten Laufs
@@ -155,6 +158,47 @@ vier Bilder. `artifacts/` selbst ist Arbeitsverzeichnis und nicht versioniert.
 
 Risse: null Hintergrundpixel im Inneren der Scheibe, überall wo die Messung
 etwas taugt. Flimmern: unter 0.01 % der Innenpixel.
+
+### Budget-Auslastung und Einschwingzeit
+
+„Spitze 2 bei Budget 2“ heißt **nicht**, dass der Scheduler durchgehend am
+Anschlag stand — eine Spitze sagt nur, dass die Decke einmal berührt wurde.
+Dass mein erster Bericht nur die Spitze auswies, war ein Berichtsfehler; das
+Overlay und der Abnahmebericht zeigen jetzt zusätzlich den Anteil der Frames
+am Anschlag, die Gesamtzahl der Bauten und die Einschwingzeit.
+
+Gemessen (`packages/render/test/lod-settle.test.ts`, screenHeight 1080):
+
+| Flugdauer | Frames am Anschlag | max. Tiefenrückstand | Bauten gesamt | ruhig nach Stopp |
+|---|---|---|---|---|
+| 90 s | 11 von 5401 (0.2 %) | 0 | 26 | 0 Frames |
+| 20 s | 11 von 1201 (1 %) | 0 | 26 | 0 Frames |
+| 10 s | 11 von 601 (2 %) | 0 | 26 | 0 Frames |
+| 5 s | 12 von 301 (4 %) | 1 Stufe | 26 | 0 Frames |
+| 2 s | 12 von 121 (10 %) | 1 Stufe | 25 | 1 Frame |
+
+Einschwingzeit aus einem kalten Baum, also der pessimistische Fall — die
+Kamera steht still und nur die sechs Wurzeln existieren:
+
+| Höhe | screenHeight 450 | 1080 | 2160 (dpr 2) | Zieltiefe bei 2160 |
+|---|---|---|---|---|
+| 1e6 m | 1 Frame | 1 | 4 | 1 |
+| 1e5 m | 6 | 7 | 8 | 3 |
+| 1e4 m | 6 | 8 | 8 | 4 |
+| 1e3 m | 9 | 12 | 12 | 6 |
+
+Der schlechteste Fall sind 12 Frames, also 0.20 s bei 60 fps. Das ist die
+Zahl, die später Pop-in vorhersagt, und sie steht als Schranke im Test.
+
+Im echten Abnahmelauf, gemessen ab dem Frame, in dem die Kamera auf der Höhe
+ankommt (der Baum ist von der vorigen Höhe teilweise warm), sind es 1 bis 5
+Frames; am Anschlag standen 8 von 152 Frames, insgesamt 20 Bauten.
+
+**Vorbehalt:** all das gilt für die flache Referenzkugel. Ihre Zieltiefe ist
+gering (6 bei 1e3 m und dpr 2) und der eingeschwungene Baum klein (16 Tiles,
+26 Bauten über den ganzen Flug). Mit echtem Terrain wachsen Zieltiefe und
+Tile-Zahl deutlich, und beide Tabellen sind neu zu messen — nicht die
+Schranken zu lockern.
 
 Die Silhouette wird je nach Höhe unterschiedlich gemessen, weil sie
 unterschiedliche Dinge ist. Ist die Scheibe ganz im Bild, wird ein Kreis durch
@@ -203,12 +247,34 @@ Der Reihe nach, mit Begründung.
 2. **Das Tile-Origin geht nicht als eigenes Uniform, sondern als
    Objekt-Matrix.**
    Das Dokument sagt „Das Tile-Origin geht als kamerarelatives Uniform rein“.
-   Umgesetzt ist es als reine Translation in `mesh.matrixWorld`, die jeder
+   Umgesetzt ist es als reine Translation in `mesh.matrixWorld`, die jeden
    Frame aus `tileOriginWorld - cameraWorld` in float64 gesetzt und einmal
    nach float32 verengt wird. Der Buchstabe weicht ab, die Sache nicht: der
-   Wert ist kamerarelativ und pro Tile, und der WebGPU-Renderer lädt ihn als
-   Teil der `modelViewMatrix` ohnehin als Per-Objekt-Uniform hoch. Der Gewinn
-   ist, dass **ein** Material alle Tiles bedient statt eines pro Tile.
+   Wert ist kamerarelativ und pro Tile. Der Gewinn ist, dass **ein** Material
+   alle Tiles bedient statt eines pro Tile.
+
+   **Dazu gehört zwingend `renderer.highPrecision = true`**, sonst rettet die
+   Konstruktion die Präzision nicht: three bildet `modelViewMatrix`
+   standardmäßig als `cameraViewMatrix.mul(modelWorldMatrix)`, also aus zwei
+   *einzeln* nach float32 verengten Matrizen, multipliziert im Shader. Mit der
+   Fahne rechnet three das Produkt in JS — `Matrix4.elements` ist ein
+   gewöhnliches Array, also float64 — und verengt einmal am Ende.
+
+   Gemessen (`packages/render/test/model-view-precision.test.ts`): solange
+   beide Operanden klein sind, sind die zwei Wege ununterscheidbar — bei einem
+   Tile in 1 km Entfernung landen beide innerhalb von ~3e-5 m am exakten
+   Ergebnis, und mal ist der eine, mal der andere vorn. Der Unterschied
+   entsteht erst, wenn ein Operand groß wird: mit dem Tile an einer absoluten
+   Weltposition ist der Shader-Weg bei jeder Kameralage schlechter, um Faktor
+   zwei bis acht. Die Fahne kauft hier also keine Pixel, sondern
+   Unabhängigkeit von einer Invariante, die eine spätere Änderung stumm
+   brechen könnte. `assertHighPrecisionModelView` bricht ab, wenn sie fehlt.
+
+   Ende zu Ende belegt: `render.gpu.test.ts` rendert denselben Blick auf
+   denselben Körper einmal im Weltursprung und einmal bei 4.1e11 m und
+   vergleicht die Pixel. Bei 4e11 m beträgt der float32-Abstand rund 32 km —
+   ein durchgesickerter absoluter Weltwert wäre nicht „etwas anders“, sondern
+   unkenntlich.
 
 3. **`PostProcessing` heißt `RenderPipeline`.**
    Three hat die Klasse in r183 umbenannt; `PostProcessing` existiert nur noch

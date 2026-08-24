@@ -54,9 +54,60 @@ export async function createPlanetRenderer(
   }
   renderer.setClearColor(0x000000, 1);
 
+  // Compute the model-view matrix on the CPU, in float64, and narrow the
+  // product once — instead of narrowing the view and world matrices separately
+  // and multiplying them in float32 in the shader.
+  //
+  // three defaults to the shader-side product (`mediumpModelViewMatrix`). For
+  // this engine that default happens to be nearly harmless, because the camera
+  // matrix is a pure rotation and the object matrix is already camera-relative,
+  // so neither operand is ever large. But "happens to be" is an invariant
+  // nobody enforces: the moment a tile is parented under a transformed group,
+  // or the camera is allowed off the origin, the shader-side product starts
+  // multiplying large float32 numbers and the error is invisible until it is
+  // not. Measured on a tile 1 km away, the CPU path is 14x more accurate
+  // (5 um vs 70 um); see `model-view-precision.test.ts`.
+  //
+  // Costs nothing here: the flag is incompatible only with InstancedMesh and
+  // SkinnedMesh, and this engine uses neither. It also moves the normal matrix
+  // onto the same CPU path, which `transformNormalToView` picks up.
+  renderer.highPrecision = true;
+
   await renderer.init();
   assertReversedDepth(renderer);
+  assertHighPrecisionModelView(renderer);
   return renderer;
+}
+
+/**
+ * Fail if the model-view matrix is being formed in the shader rather than on
+ * the CPU. See the note in `createPlanetRenderer`.
+ */
+export function assertHighPrecisionModelView(renderer: WebGPURenderer): void {
+  if (renderer.highPrecision !== true) {
+    throw new Error(
+      'createPlanetRenderer: high-precision model-view is not active. The ' +
+        'model-view matrix would be formed from two separately narrowed float32 ' +
+        'matrices in the shader, which silently loses precision as soon as either ' +
+        'of them stops being small.',
+    );
+  }
+}
+
+/** Which arithmetic produces the model-view matrix the shader receives. */
+export interface ModelViewPrecision {
+  readonly highPrecision: boolean;
+  /**
+   * `cpu-float64` — the product is formed in JS in float64 and narrowed once.
+   * `gpu-float32` — view and world are narrowed separately and multiplied in
+   * the shader, so the error scales with whichever of them is larger.
+   */
+  readonly path: 'cpu-float64' | 'gpu-float32';
+}
+
+export function describeModelViewPrecision(renderer: WebGPURenderer): ModelViewPrecision {
+  const high = renderer.highPrecision === true;
+  return { highPrecision: high, path: high ? 'cpu-float64' : 'gpu-float32' };
 }
 
 /**

@@ -19,7 +19,12 @@ import {
 import { Vec3d, referenceBody, type Body } from '@planet/core';
 import { Planet } from '../src/planet.ts';
 import { PlanetCamera } from '../src/planet-camera.ts';
-import { assertReversedDepth, describeDepth } from '../src/renderer.ts';
+import {
+  assertHighPrecisionModelView,
+  assertReversedDepth,
+  describeDepth,
+  describeModelViewPrecision,
+} from '../src/renderer.ts';
 import { createPostPipeline } from '../src/post.ts';
 
 const SIZE = 96;
@@ -36,6 +41,8 @@ beforeAll(async () => {
   renderer = new WebGPURenderer({ canvas, antialias: false, reversedDepthBuffer: true });
   renderer.setSize(SIZE, SIZE, false);
   renderer.setClearColor(0x000000, 1);
+  // Same as `createPlanetRenderer`; set before any material compiles.
+  renderer.highPrecision = true;
   await renderer.init();
 }, 180_000);
 
@@ -64,6 +71,14 @@ function litFraction(pixels: Float32Array): number {
 }
 
 describe('the render path on a real device', () => {
+  it('forms the model-view matrix on the CPU, not from two narrowed matrices', () => {
+    expect(() => assertHighPrecisionModelView(renderer)).not.toThrow();
+    expect(describeModelViewPrecision(renderer)).toEqual({
+      highPrecision: true,
+      path: 'cpu-float64',
+    });
+  });
+
   it('runs on WebGPU with reversed-Z, and says so', () => {
     expect(() => assertReversedDepth(renderer)).not.toThrow();
     const depth = describeDepth(renderer);
@@ -198,5 +213,63 @@ describe('the render path on a real device', () => {
       expect(Number.isFinite(translation[12] as number)).toBe(true);
     }
     planet.dispose();
+  }, 180_000);
+});
+
+describe('the body far from the world origin', () => {
+  /**
+   * The end-to-end version of the model-view question.
+   *
+   * Nothing in the render path may depend on where the body sits in world
+   * coordinates: the tile origin is turned into a camera-relative offset in
+   * float64 before it ever reaches a matrix. So the same view of the same body
+   * has to produce the *same pixels* whether the body is at the origin or four
+   * hundred billion metres away.
+   *
+   * If any absolute world position leaked into a float32 matrix, at 4e11 m the
+   * float32 spacing is about 32 km and this would not merely differ — it would
+   * be unrecognisable.
+   */
+  async function renderAt(centre: Vec3d): Promise<Float32Array> {
+    const scene = new Scene();
+    const sun = new DirectionalLight(0xffffff, 3);
+    sun.position.set(0.6, 0.45, 0.65).normalize();
+    scene.add(sun);
+    scene.add(new AmbientLight(0x223044, 1.2));
+
+    const camera = new PlanetCamera({ fovY: (50 * Math.PI) / 180, aspect: 1 });
+    const planet = new Planet(EARTH, { center: centre });
+    scene.add(planet.group);
+    await planet.init();
+
+    camera.placeAtAltitude(centre, new Vec3d(0.69, 0.33, 0.64), 2e7, EARTH.radius);
+    for (let i = 0; i < 60; i++) {
+      camera.update();
+      planet.update(camera, SIZE, SIZE);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const pixels = await renderToPixels(scene, camera);
+    planet.dispose();
+    return pixels;
+  }
+
+  it('renders identically at the origin and at 4e11 m', async () => {
+    const atOrigin = await renderAt(new Vec3d(0, 0, 0));
+    const farAway = await renderAt(new Vec3d(4.1e11, -2.7e11, 9.3e10));
+
+    expect(litFraction(atOrigin)).toBeGreaterThan(0.05);
+    expect(litFraction(farAway)).toBeGreaterThan(0.05);
+
+    let maxDelta = 0;
+    let differing = 0;
+    for (let i = 0; i < atOrigin.length; i += 4) {
+      const d = Math.abs((atOrigin[i] as number) - (farAway[i] as number));
+      if (d > 1e-6) differing++;
+      if (d > maxDelta) maxDelta = d;
+    }
+    // Allowed to differ only by the float64 resolution at 4e11 m, which is
+    // about 6e-5 m of camera-relative offset — far below a pixel.
+    expect(maxDelta).toBeLessThan(0.02);
+    expect(differing / (atOrigin.length / 4)).toBeLessThan(0.02);
   }, 180_000);
 });

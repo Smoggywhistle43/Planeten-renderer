@@ -94,6 +94,28 @@ export interface LodStats {
   frame: number;
   /** Builds started during the last `update`. Must never exceed the budget. */
   buildsStartedThisFrame: number;
+  /**
+   * Frames since startup in which the budget was fully spent.
+   *
+   * Reported next to `framesTotal` because a peak on its own is misleading: a
+   * peak of 2 against a budget of 2 says the ceiling was touched, not that the
+   * scheduler was pinned against it. Over the stage-01 descent it is touched on
+   * about 0.2 % of frames.
+   */
+  framesAtBudget: number;
+  /** Frames since startup. The denominator for `framesAtBudget`. */
+  framesTotal: number;
+  /** Builds started since startup. */
+  buildsTotal: number;
+  /** Highest `buildsStartedThisFrame` seen since startup. */
+  peakBuildsPerFrame: number;
+  /**
+   * Frames since the last one that started a build or had one in flight.
+   *
+   * This is the settle time, and it is what predicts pop-in: after the camera
+   * stops, the tree is quiet within this many frames.
+   */
+  framesSinceBuildActivity: number;
   /** Builds that completed since the previous `update`. */
   buildsCompletedThisFrame: number;
   /** Builds in flight right now. */
@@ -139,12 +161,21 @@ export class LodScheduler<T> {
   private failed = 0;
   private residentCount = 0;
   private disposed = false;
+  private framesAtBudget = 0;
+  private buildsTotal = 0;
+  private peakBuilds = 0;
+  private quietFrames = 0;
   /** Floor on the distance used for the error, so a grazing tile stays finite. */
   private readonly minDistance: number;
 
   private readonly stat: LodStats = {
     frame: 0,
     buildsStartedThisFrame: 0,
+    framesAtBudget: 0,
+    framesTotal: 0,
+    buildsTotal: 0,
+    peakBuildsPerFrame: 0,
+    framesSinceBuildActivity: 0,
     buildsCompletedThisFrame: 0,
     buildsPending: 0,
     buildsDeferredThisFrame: 0,
@@ -270,7 +301,18 @@ export class LodScheduler<T> {
 
     this.prune();
 
+    this.buildsTotal += started;
+    if (started >= this.config.buildBudgetPerFrame) this.framesAtBudget++;
+    if (started > this.peakBuilds) this.peakBuilds = started;
+    const busy = started > 0 || this.pending > 0 || this.completedSinceUpdate > 0;
+    this.quietFrames = busy ? 0 : this.quietFrames + 1;
+
     this.stat.frame = this.frame;
+    this.stat.framesTotal = this.frame;
+    this.stat.framesAtBudget = this.framesAtBudget;
+    this.stat.buildsTotal = this.buildsTotal;
+    this.stat.peakBuildsPerFrame = this.peakBuilds;
+    this.stat.framesSinceBuildActivity = this.quietFrames;
     this.stat.buildsStartedThisFrame = started;
     this.stat.buildsCompletedThisFrame = this.completedSinceUpdate;
     this.stat.buildsPending = this.pending;
