@@ -62,6 +62,7 @@ export {
 
 export {
   assertHighPrecisionModelView,
+  assertLinearOutput,
   assertReversedDepth,
   createPlanetRenderer,
   describeDepth,
@@ -75,6 +76,7 @@ export {
   createPostPipeline,
   type PostPipelineHandle,
   type PostPipelineOptions,
+  type ToneMapper,
 } from './post.ts';
 
 export { Planet, type PlanetOptions, type PlanetStats, type PlanetTile } from './planet.ts';

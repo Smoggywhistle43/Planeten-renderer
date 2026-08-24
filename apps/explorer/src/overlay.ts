@@ -22,6 +22,15 @@ export interface OverlayInput {
   readonly drawingBufferHeight: number;
   readonly flightRunning: boolean;
   readonly heightScale: number;
+  /** Exposure value at ISO 100 currently in use. */
+  readonly ev100: number;
+  /** The multiplier the scene luminance is scaled by. */
+  readonly exposure: number;
+  readonly toneMapper: string;
+  /** Sunlight arriving at the body, lux. */
+  readonly sunIlluminance: number;
+  /** Brightest surface luminance the body can produce, cd/m^2. */
+  readonly subsolarLuminance: number;
 }
 
 /** Rolling frametime window. 120 frames is about two seconds at 60 Hz. */
@@ -134,6 +143,17 @@ export class Overlay {
       ),
       row('  clear', `${input.depth.clearDepth}   compare ${input.depth.depthCompare}`),
       row('höhenfeld', input.heightScale === 0 ? 'aus (exakte Kugel)' : `x${input.heightScale}`),
+      '',
+      row('sonne', `${sci(input.sunIlluminance)} lx  (Beleuchtungsstärke)`),
+      row('hellster punkt', `${sci(input.subsolarLuminance)} cd/m²`),
+      row(
+        'belichtung',
+        `EV ${input.ev100.toFixed(2)}   x${input.exposure.toExponential(2)}   ${input.toneMapper}`,
+      ),
+      row(
+        '  ergibt',
+        `${(input.subsolarLuminance * input.exposure).toFixed(3)} vor dem Tonemapping`,
+      ),
     ].join('\n');
   }
 }

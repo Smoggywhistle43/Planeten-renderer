@@ -33,6 +33,36 @@ export {
 } from './seed.ts';
 
 export {
+  ALBEDO,
+  ASTRONOMICAL_UNIT,
+  CLEAR_SKY_SURFACE_ILLUMINANCE,
+  INCIDENT_LIGHT_CALIBRATION,
+  MAX_HALF_FLOAT,
+  REFLECTED_LIGHT_CALIBRATION,
+  SOLAR_CONSTANT,
+  SOLAR_ILLUMINANCE_1AU,
+  SOLAR_RADIUS,
+  SOLAR_TEMPERATURE,
+  SUN,
+  SUNNY_16,
+  adaptEv100,
+  angularRadius,
+  discLuminance,
+  ev100FromCamera,
+  ev100FromIlluminance,
+  ev100FromLuminance,
+  exposeLuminance,
+  exposureFromEv100,
+  illuminanceAtDistance,
+  lambertLuminance,
+  luminanceFromEv100,
+  solidAngle,
+  subsolarLuminance,
+  type CameraSettings,
+  type Star,
+} from './photometry.ts';
+
+export {
   makeBody,
   referenceBody,
   bodyId,

@@ -8,7 +8,17 @@
  */
 
 import { AmbientLight, DirectionalLight, Scene } from 'three/webgpu';
-import { Vec3d, referenceBody, type Body } from '@planet/core';
+import {
+  ALBEDO,
+  ASTRONOMICAL_UNIT,
+  SUN,
+  Vec3d,
+  ev100FromLuminance,
+  illuminanceAtDistance,
+  referenceBody,
+  subsolarLuminance,
+  type Body,
+} from '@planet/core';
 import {
   DEFAULT_LOD_CONFIG,
   Planet,
@@ -27,6 +37,19 @@ const TERRAIN_PREVIEW_AMPLITUDE = 12_000;
 
 const BODY_CENTRE = new Vec3d(0, 0, 0);
 
+/** Where the body sits relative to its star. Earth's orbit, for now. */
+const ORBIT_RADIUS = ASTRONOMICAL_UNIT;
+
+/**
+ * Starlight and zodiacal light on the night side, lux.
+ *
+ * Not a fill light chosen to make the picture readable — it is the real
+ * illuminance of a moonless night sky, about seven orders of magnitude below
+ * sunlight. It keeps the night side from being an absolute void without
+ * pretending anything is lighting it that is not.
+ */
+const STARLIGHT_ILLUMINANCE = 0.002;
+
 interface HarnessStats extends PlanetStats {
   altitude: number;
   frameMs: number;
@@ -37,6 +60,8 @@ interface HarnessStats extends PlanetStats {
   drawingBufferWidth: number;
   drawingBufferHeight: number;
   pixelRatio: number;
+  ev100: number;
+  exposure: number;
 }
 
 /** The surface the acceptance harness drives. Also handy from a dev console. */
@@ -63,6 +88,17 @@ export interface PlanetHarness {
   setLodDebug(amount: number): void;
   setHeightScale(scale: number): void;
   setSize(width: number, height: number, pixelRatio: number): void;
+  /** Exposure value at ISO 100. Lower is brighter. */
+  setEv100(ev100: number): void;
+  meteredEv100(): number;
+  /**
+   * Point the sun somewhere else. The direction is where the light comes
+   * *from*, in world axes; it gets normalised.
+   *
+   * Sun behind the camera gives a flat, fully lit disc. Sun off to the side
+   * gives a terminator, which is where a planet renderer is actually judged.
+   */
+  setSunDirection(x: number, y: number, z: number): void;
   /**
    * Negative control for the precision rules.
    *
@@ -111,10 +147,15 @@ async function boot(): Promise<void> {
   const depth = describeDepth(renderer);
 
   const scene = new Scene();
-  const sun = new DirectionalLight(0xffffff, 3.0);
+
+  // Real sunlight: the intensity is an illuminance in lux, so what lands in
+  // the framebuffer is a luminance in cd/m^2. At 1 AU that is 128000 lx, and a
+  // surface of Earth's mean albedo facing the sun comes out near 1.2e4 cd/m^2.
+  const sunIlluminance = illuminanceAtDistance(SUN, ORBIT_RADIUS);
+  const sun = new DirectionalLight(0xffffff, sunIlluminance);
   sun.position.set(0.6, 0.45, 0.65).normalize();
   scene.add(sun);
-  scene.add(new AmbientLight(0x223044, 1.2));
+  scene.add(new AmbientLight(0xffffff, STARLIGHT_ILLUMINANCE));
 
   const camera = new PlanetCamera({
     fovY: (50 * Math.PI) / 180,
@@ -128,6 +169,7 @@ async function boot(): Promise<void> {
 
   const planet = new Planet(body, {
     center: BODY_CENTRE,
+    material: { albedo: ALBEDO.earthMean },
     lod: { errorThresholdPixels: errorThreshold, buildBudgetPerFrame: budget },
     onBuildError: (error, key) => {
       console.error('tile build failed', key, error);
@@ -136,9 +178,13 @@ async function boot(): Promise<void> {
   scene.add(planet.group);
   await planet.init();
 
-  // Stage 01 renders through the node stack even though it has no effects, so
-  // the seam is exercised rather than merely planned for.
-  const post = createPostPipeline(renderer, scene, camera);
+  // Expose for the sunlit surface, the way a photographer would meter it.
+  // Nothing measures the frame yet — that is the next piece — so this is the
+  // analytic prediction rather than a reading.
+  const meteredEv100 = ev100FromLuminance(
+    subsolarLuminance(SUN, ORBIT_RADIUS, ALBEDO.earthMean),
+  );
+  const post = createPostPipeline(renderer, scene, camera, { ev100: meteredEv100 });
 
   const flight = new Flight();
   const overlay = new Overlay(statsElement);
@@ -208,6 +254,11 @@ async function boot(): Promise<void> {
       drawingBufferHeight: buffer.height,
       flightRunning: flight.running,
       heightScale,
+      ev100: post.ev100,
+      exposure: post.exposure,
+      toneMapper: post.toneMapper,
+      sunIlluminance,
+      subsolarLuminance: subsolarLuminance(SUN, ORBIT_RADIUS, ALBEDO.earthMean),
     });
   }
 
@@ -251,6 +302,17 @@ async function boot(): Promise<void> {
       case 't':
       case 'T':
         flight.tilt = flight.tilt > 0 ? 0 : 0.85;
+        break;
+      // One stop darker / brighter, the way an exposure compensation dial works.
+      case '-':
+        post.setEv100(post.ev100 + 1);
+        break;
+      case '+':
+      case '=':
+        post.setEv100(post.ev100 - 1);
+        break;
+      case '0':
+        post.setEv100(meteredEv100);
         break;
       case 'l':
       case 'L':
@@ -321,15 +383,26 @@ async function boot(): Promise<void> {
       planet.materialHandle.setLodDebug(amount);
     },
     setHeightScale(scale: number): void {
+      // A real multiplier, not a switch: the acceptance jitter probe wants a
+      // little relief to look at, not the full twelve kilometres.
       heightScale = scale;
       planet.materialHandle.setBody({
         ...body,
-        terrain: { ...body.terrain, amplitude: scale > 0 ? TERRAIN_PREVIEW_AMPLITUDE : 0 },
+        terrain: { ...body.terrain, amplitude: TERRAIN_PREVIEW_AMPLITUDE },
       });
-      planet.materialHandle.setHeightScale(scale > 0 ? 1 : 0);
+      planet.materialHandle.setHeightScale(scale);
     },
     setCameraPrecision(mode: 'f64' | 'f32'): void {
       cameraPrecision = mode;
+    },
+    setEv100(next: number): void {
+      post.setEv100(next);
+    },
+    setSunDirection(x: number, y: number, z: number): void {
+      sun.position.set(x, y, z).normalize();
+    },
+    meteredEv100(): number {
+      return meteredEv100;
     },
     setSize(width: number, height: number, pixelRatio: number): void {
       renderer.setPixelRatio(pixelRatio);
@@ -351,6 +424,8 @@ async function boot(): Promise<void> {
         drawingBufferWidth: buffer.width,
         drawingBufferHeight: buffer.height,
         pixelRatio: renderer.getPixelRatio(),
+        ev100: post.ev100,
+        exposure: post.exposure,
       };
     },
     resetMetrics(): void {

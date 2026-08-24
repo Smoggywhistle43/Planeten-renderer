@@ -5,8 +5,8 @@ abgenommen.
 
 | | |
 |---|---|
-| Stufe | **01 — Fundament** |
-| Stand | abgenommen bis auf Kriterium 6 (siehe unten) |
+| Stufe | **02 — Licht und Luft**, Teil 1 und 2 von 4 |
+| Stand | Stufe 01 abgenommen bis auf Kriterium 6. Stufe 02: Licht steht, Luft fehlt noch |
 | Datum | 2026-08-24 |
 | Three.js | r185 (`three@0.185.1`), `three/webgpu` + `three/tsl` |
 | TypeScript | 5.9.3, `strict: true` |
@@ -67,6 +67,84 @@ Vanilla TS. Graue Kugel, Skriptflug 1e9 → 1e3 m, Overlay mit Frametime,
 Knotenbauten pro Frame gegen das Budget, Tiefenpuffer-Konfiguration und den
 float32-Auflösungen. `window.__planet` legt eine deterministische
 Schrittsteuerung frei, an der der Abnahmelauf hängt.
+
+---
+
+## Stufe 02 — Licht und Luft
+
+Vier Teile, in Baureihenfolge. Zwei stehen.
+
+| | Inhalt | Stand |
+|---|---|---|
+| 2.1 | HDR, physikalische Einheiten, echte Sonne, Albedo als Reflektanz | **fertig** |
+| 2.2 | Belichtung und Tonemapping | **fertig**, Automatik fehlt noch |
+| 2.3 | Motion Vectors und TAA | offen |
+| 2.4 | Atmosphäre | offen |
+
+### Licht in echten Einheiten
+
+Nichts im Bild ist mehr eine ausgedachte 0..1-Helligkeit. Die Kette:
+
+```
+Beleuchtungsstärke E (lux)    Sonnenlicht, das auf die Fläche trifft
+x cos(Einfallswinkel)          wie schräg die Fläche zur Sonne steht
+x Albedo / pi                  Lambert-Reflexion
+= Leuchtdichte L (cd/m²)       was Auge oder Sensor sieht
+```
+
+`packages/core/src/photometry.ts` hält die Physik, ohne `three`: Sonne als
+`Star` mit 128 000 lx bei 1 AE, Abstandsgesetz, Lambert, EV100,
+Kamera-Dreieck aus Blende/Zeit/ISO, Augenanpassung, gemessene Albedos.
+
+Three rechnet exakt dieselbe Kette (`lightColor = color × intensity`, dann
+`× cos`, dann `× albedo/π`). Also gilt: **Lichtintensität in Lux gesetzt und
+Materialfarbe als echtes Albedo gesetzt heißt, im Framebuffer steht
+Leuchtdichte in cd/m²** — ohne Korrekturfaktor.
+
+Nachgewiesen statt behauptet, `packages/render/test/photometry.gpu.test.ts`:
+Kugel rendern, hellsten Punkt auslesen, über fünf Albedos eine Gerade fitten.
+
+| | |
+|---|---|
+| gemessene Steigung | 40 692 cd/m² pro Albedo |
+| vorhergesagt (E/π) | 40 744 |
+| Abweichung | **0.13 %** |
+| Achsenabschnitt | ~390 cd/m², albedo-unabhängig — der Spekular-Anteil |
+
+Ein verirrter Gammawert wäre um Faktor vier daneben, ein fehlendes 1/π um
+Faktor drei. Die Kette stimmt.
+
+`material.color` wird mit `setRGB` gesetzt, nicht mit `setHex`: letzteres
+liest den Wert als sRGB und legt still eine Gammakurve drüber, was aus einem
+gemessenen Albedo von 0.30 eine 0.07 machen würde.
+
+### Belichtung
+
+Die Tagseite eines Planeten und seine mondlose Nachtseite liegen sieben
+Größenordnungen auseinander. Kein Bildschirm zeigt das, also muss etwas
+auswählen — genau das, was eine Kamera oder ein Auge tut.
+
+- Belichtung als `1 / (1.2 · 2^EV100)`, also Blende, Zeit und ISO.
+- Tonemapping mit **AgX**: hält den Farbton beim Ausbrennen, statt alles
+  Richtung Gelbweiß zu schieben wie Reinhard und ACES.
+- Beides im TSL-Node-Graph, nicht in `renderer.toneMapping`. Damit kann die
+  Belichtung später von einem Compute-Pass gesteuert werden, der das Bild
+  misst, ganz ohne Rückgabe an die CPU. `assertLinearOutput` bricht ab, wenn
+  jemand three's eigenes Tonemapping wieder einschaltet — es liefe danach und
+  würde doppelt abbilden.
+
+Der Explorer belichtet auf die sonnenbeschienene Oberfläche: EV 16.58 bei
+Erdalbedo. `+`/`-` verschieben um eine Blende, `0` setzt zurück.
+
+**Noch keine Automatik.** Die Belichtung ist die analytische Vorhersage, keine
+Messung des Bildes. Der Histogramm-Compute-Pass ist der nächste kleine Schritt.
+
+### Ansichten
+
+`pnpm portrait` rendert einen Satz Bilder nach `artifacts/portrait/` —
+Terminator, Sichel, Horizont, plus eine Belichtungsreihe über vier Blenden.
+Kein Gatter, nur zum Anschauen. Für einen Renderer, der echt aussehen soll,
+ist Hinsehen das eigentliche Prüfverfahren.
 
 ---
 
@@ -209,8 +287,19 @@ LOD-Naht.
 
 ### Zu Kriterium 4
 
-Zittern wird nicht per Augenschein beurteilt. Der Lauf schiebt die Kamera in
-Schritten seitwärts und misst, ob sich das Bild bei **jedem** Schritt ändert.
+Zittern wird nicht per Augenschein beurteilt. Die Kamera wird in Schritten
+seitwärts geschoben, und gemessen wird, ob sich das Bild bei **jedem** Schritt
+ändert.
+
+**Diese Messung ist in Stufe 02 umgezogen**, von `scripts/acceptance.mjs` nach
+`packages/render/test/jitter.gpu.test.ts`. Grund: sie las den Canvas zurück,
+also durch Tonemapping und einen 8-Bit-Quantisierer hindurch. Mit Belichtung
+und AgX änderte ein Fünf-Zentimeter-Schritt noch drei von 432 000 Pixeln — die
+Messung lag auf der Rauschgrenze ihres eigenen Messgeräts und konnte eine
+absichtlich kaputte Pipeline nicht mehr von der echten unterscheiden. Der Test
+rendert jetzt in ein Float-Rendertarget, wo ein Unterschied von 1e-6 anschlägt.
+Die float32-Negativkontrolle ist mitgezogen. Was im Abnahmelauf bleibt, ist
+das, was ein Bild wirklich beantworten kann: Silhouette, Risse, Flimmern.
 Die Schrittweite wird pro Höhe so gewählt, dass sie unter der
 float32-Auflösung bei Erdradius (~0.5 m) bleibt und trotzdem eine messbare
 Bildbewegung erzeugt; nahe der Oberfläche geht beides zugleich, und dort trägt

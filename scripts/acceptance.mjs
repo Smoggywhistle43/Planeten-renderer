@@ -57,9 +57,6 @@ const CHECKPOINTS = FAST
 const DESCENT_FRAMES = FAST ? 20 : 60;
 const SETTLE_FRAMES = FAST ? 30 : 150;
 
-/** The jitter probe: how far to walk sideways, and in how many steps. */
-const JITTER_ALTITUDES = FAST ? [1e3] : [1e5, 1e4, 1e3];
-const JITTER_STEPS = FAST ? 16 : 32;
 
 /** Mirrors DEFAULT_LOD_CONFIG.errorThresholdPixels in @planet/render. */
 const DEFAULT_ERROR_THRESHOLD_PX = 2;
@@ -470,36 +467,6 @@ const PROBE_SOURCE = `(() => {
 
 // ---------------------------------------------------------------- helpers ---
 
-/** Least-squares line fit; returns slope, intercept and the worst residual. */
-function lineFit(xs, ys) {
-  const n = xs.length;
-  const meanX = xs.reduce((a, b) => a + b, 0) / n;
-  const meanY = ys.reduce((a, b) => a + b, 0) / n;
-  let sxy = 0;
-  let sxx = 0;
-  for (let i = 0; i < n; i++) {
-    sxy += (xs[i] - meanX) * (ys[i] - meanY);
-    sxx += (xs[i] - meanX) ** 2;
-  }
-  const slope = sxx === 0 ? 0 : sxy / sxx;
-  const intercept = meanY - slope * meanX;
-  let maxResidual = 0;
-  const residuals = [];
-  for (let i = 0; i < n; i++) {
-    const r = ys[i] - (slope * xs[i] + intercept);
-    residuals.push(r);
-    if (Math.abs(r) > maxResidual) maxResidual = Math.abs(r);
-  }
-  return { slope, intercept, maxResidual, residuals };
-}
-
-function median(values) {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-}
-
 /** Expected silhouette radius in pixels for a sphere seen from `distance`. */
 function expectedRadiusPx(radius, distance, fovY, heightPx) {
   if (distance <= radius) return Number.POSITIVE_INFINITY;
@@ -579,7 +546,6 @@ async function main() {
     pixelRatio: PIXEL_RATIO,
     fast: FAST,
     checkpoints: [],
-    jitter: [],
     failures: [],
   };
 
@@ -790,147 +756,21 @@ async function main() {
       await stepFrames(page, 1, 0);
     }
 
-    // ---- criterion 4: walk sideways and watch the silhouette --------------
+    // ---- criterion 4: the jitter measurement lives in the test suite -------
     //
-    // Run twice at the deepest altitude: once as built, and once with the
-    // camera deliberately narrowed to float32. The control has to fail, or the
-    // test proves nothing.
-    /**
-     * Step size for the jitter walk at a given altitude.
-     *
-     * Two demands pull against each other. The step has to be small enough that
-     * float32 world coordinates could not represent it — float32 resolves about
-     * half a metre at Earth's radius — and large enough that a correct renderer
-     * visibly moves the image, or the measurement has no power either way.
-     *
-     * Angular motion is what the screen sees, so the second demand scales with
-     * altitude: five centimetres at 1e5 m moves the picture by 0.0002 px, which
-     * no rasteriser will show. Below about 3e3 m both demands are satisfiable at
-     * once, and that is where the sub-float32 claim is actually tested; higher
-     * up the walk still checks that the silhouette tracks smoothly.
-     */
-    function jitterStepFor(altitude) {
-      const pixelsPerRadian = (VIEWPORT.height * PIXEL_RATIO) / (2 * Math.tan((50 * Math.PI) / 180 / 2));
-      const forVisibility = (0.05 * altitude) / pixelsPerRadian;
-      return Math.max(0.05, forVisibility);
-    }
-
-    async function walkSideways(altitude, precision, step) {
-      await page.evaluate((m) => window.__planet.setCameraPrecision(m), precision);
-      await page.evaluate((a) => window.__planet.setAltitude(a), altitude);
-      await page.evaluate(() => window.__planet.nudgeAlong(0));
-      await stepFrames(page, SETTLE_FRAMES, 0);
-      await page.evaluate(() => window.__resetDiff());
-
-      const offsets = [];
-      const centroidsX = [];
-      const centroidsY = [];
-      const changedFractions = [];
-      let buildsDuringProbe = 0;
-
-      for (let i = 0; i < JITTER_STEPS; i++) {
-        const offset = i * step;
-        await page.evaluate((d) => window.__planet.nudgeAlong(d), offset);
-        await stepFrames(page, 1, 0);
-        const { probe, diff, buildsStartedThisFrame } = await renderProbeAndDiff(page);
-        buildsDuringProbe += buildsStartedThisFrame;
-        if (probe.empty) {
-          await page.evaluate(() => window.__planet.nudgeAlong(0));
-          await page.evaluate(() => window.__planet.setCameraPrecision('f64'));
-          return { aborted: true, atStep: i };
-        }
-        offsets.push(offset);
-        centroidsX.push(probe.centroidX);
-        centroidsY.push(probe.centroidY);
-        if (i > 0) changedFractions.push(diff.changedFraction);
-      }
-      await page.evaluate(() => window.__planet.nudgeAlong(0));
-      await page.evaluate(() => window.__planet.setCameraPrecision('f64'));
-
-      const fitX = lineFit(offsets, centroidsX);
-      const fitY = lineFit(offsets, centroidsY);
-      const stepsThatMoved = changedFractions.filter((f) => f > 0).length;
-
-      return {
-        aborted: false,
-        altitude,
-        precision,
-        stepMetres: step,
-        steps: JITTER_STEPS,
-        totalTravelMetres: step * (JITTER_STEPS - 1),
-        stepsThatChangedTheImage: stepsThatMoved,
-        stepsCompared: changedFractions.length,
-        movedFraction: stepsThatMoved / changedFractions.length,
-        /** float32 resolves ~0.5 m at Earth's radius; below that it cannot hold the step. */
-        subFloat32: step < 0.5,
-        expectedPxPerStep:
-          (step * ((VIEWPORT.height * PIXEL_RATIO) / (2 * Math.tan((50 * Math.PI) / 180 / 2)))) /
-          altitude,
-        centroidTravelPx: Math.hypot(
-          centroidsX[centroidsX.length - 1] - centroidsX[0],
-          centroidsY[centroidsY.length - 1] - centroidsY[0],
-        ),
-        medianChangedFraction: median(changedFractions),
-        maxResidualXPx: fitX.maxResidual,
-        maxResidualYPx: fitY.maxResidual,
-        buildsDuringProbe,
-        centroidsX,
-      };
-    }
-
-    for (const altitude of JITTER_ALTITUDES) {
-      log(`jitter probe at ${altitude.toExponential(1)} m …`);
-      const result = await walkSideways(altitude, 'f64', jitterStepFor(altitude));
-      if (result.aborted) {
-        report.failures.push(
-          `jitter probe at ${altitude.toExponential(1)} m rendered nothing at step ${result.atStep}`,
-        );
-        continue;
-      }
-      report.jitter.push(result);
-
-      // Every sub-float32 step has to move the picture. A staircase would leave
-      // most of them bit-identical.
-      if (result.movedFraction < 0.9) {
-        report.failures.push(
-          `jitter at ${altitude.toExponential(1)} m: only ${result.stepsThatChangedTheImage} of ` +
-            `${result.stepsCompared} steps of ${result.stepMetres.toFixed(3)} m changed the image — the ` +
-            'geometry is quantising, which is what float32 world coordinates look like',
-        );
-      }
-      // And the movement has to be a smooth track, not a jump.
-      const residual = Math.max(result.maxResidualXPx, result.maxResidualYPx);
-      if (residual > 0.5) {
-        report.failures.push(
-          `jitter at ${altitude.toExponential(1)} m: silhouette centroid deviates ` +
-            `${residual.toFixed(3)} px from a straight track`,
-        );
-      }
-    }
-
-    // ---- the control: the same walk, with the camera narrowed to float32 ----
-    const controlAltitude = JITTER_ALTITUDES[JITTER_ALTITUDES.length - 1];
-    log(`negative control at ${controlAltitude.toExponential(1)} m (camera forced to float32) …`);
-    const control = await walkSideways(controlAltitude, 'f32', jitterStepFor(controlAltitude));
-    if (control.aborted) {
-      report.failures.push('negative control rendered nothing');
-    } else {
-      report.control = control;
-      const live = report.jitter.find((j) => j.altitude === controlAltitude);
-      if (control.movedFraction >= 0.9) {
-        report.failures.push(
-          'negative control did not snap: forcing the camera through float32 still moved the ' +
-            `image on ${control.stepsThatChangedTheImage}/${control.stepsCompared} steps, so the ` +
-            'jitter test has no power to detect the failure it claims to rule out',
-        );
-      }
-      if (live && control.movedFraction >= live.movedFraction) {
-        report.failures.push(
-          'negative control moved at least as often as the real pipeline ' +
-            `(${control.movedFraction.toFixed(2)} vs ${live.movedFraction.toFixed(2)})`,
-        );
-      }
-    }
+    // It used to run here, reading the canvas back. That meant measuring
+    // sub-pixel motion through tone mapping and an 8-bit quantiser: a five
+    // centimetre step changed three pixels out of four hundred thousand, and a
+    // deliberately broken pipeline scored the same as the real one. Both were
+    // on the instrument's noise floor rather than the renderer's.
+    //
+    // `packages/render/test/jitter.gpu.test.ts` does it against a float render
+    // target instead, where a difference of 1e-6 registers, and it carries the
+    // same float32 negative control. What stays here is the part a picture can
+    // actually answer: the silhouette, cracks and speckle, above.
+    report.jitterNote =
+      'Gemessen in packages/render/test/jitter.gpu.test.ts gegen ein ' +
+      'Float-Rendertarget statt gegen den 8-Bit-Canvas.';
 
     // ---- criterion 6: frametime, reported not asserted ---------------------
     const frameTimes = report.checkpoints.map((c) => c.frameMs).filter((v) => v > 0);
@@ -1049,41 +889,13 @@ function renderSummary(report) {
   lines.push('## Zittern der Silhouette');
   lines.push('');
   lines.push(
-    '| Höhe (m) | Schritt | erwartete Bildbewegung/Schritt | unter float32-Auflösung | Schritte mit Bildänderung | Abweichung von der Geraden (px) | Builds |',
+    'Wird nicht mehr hier gemessen. Ein 8-Bit-Canvas nach Tonemapping ist das ' +
+      'falsche Messgerät für Bewegungen unterhalb eines Pixels — die Messung lag ' +
+      'auf ihrer eigenen Rauschgrenze und konnte eine absichtlich kaputte Pipeline ' +
+      'nicht mehr von der echten unterscheiden. Sie läuft jetzt in ' +
+      '`packages/render/test/jitter.gpu.test.ts` gegen ein Float-Rendertarget, ' +
+      'mit derselben float32-Negativkontrolle.',
   );
-  lines.push('|---|---|---|---|---|---|---|');
-  for (const j of report.jitter) {
-    lines.push(
-      `| ${j.altitude.toExponential(2)} | ${j.stepMetres.toFixed(3)} m x ${j.steps} | ` +
-        `${j.expectedPxPerStep.toFixed(3)} px | ${j.subFloat32 ? 'ja' : 'nein'} | ` +
-        `${j.stepsThatChangedTheImage}/${j.stepsCompared} | ` +
-        `${Math.max(j.maxResidualXPx, j.maxResidualYPx).toFixed(4)} | ${j.buildsDuringProbe} |`,
-    );
-  }
-  lines.push('');
-  lines.push(
-    'Der Schritt wird pro Höhe so gewählt, dass er einerseits unter der float32-Auflösung ' +
-      'bei Erdradius (~0.5 m) liegt und andererseits überhaupt eine messbare Bildbewegung ' +
-      'erzeugt. Beides gleichzeitig geht nur nahe der Oberfläche — dort trägt die Messung ' +
-      'die Aussage, weiter oben prüft sie nur noch die Gleichmäßigkeit der Bewegung.',
-  );
-  if (report.control) {
-    lines.push('');
-    lines.push('### Negativkontrolle');
-    lines.push('');
-    lines.push(
-      'Derselbe Lauf, aber die Kameraposition wird vor dem Zeichnen durch float32 ' +
-        'gerundet — also genau das, was passiert, wenn Weltkoordinaten irgendwo im ' +
-        'Pfad float32 werden. Der Test muss hier fehlschlagen, sonst misst er nichts.',
-    );
-    lines.push('');
-    lines.push(
-      `- float64 (gebaut): ${report.jitter.at(-1)?.stepsThatChangedTheImage}/${report.jitter.at(-1)?.stepsCompared} Schritte ändern das Bild`,
-    );
-    lines.push(
-      `- float32 (Kontrolle): ${report.control.stepsThatChangedTheImage}/${report.control.stepsCompared} Schritte ändern das Bild`,
-    );
-  }
   lines.push('');
   lines.push('## Budget');
   lines.push('');

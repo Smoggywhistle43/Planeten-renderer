@@ -15,7 +15,7 @@
  * silent fallback would look like a rendering bug days later.
  */
 
-import { WebGPURenderer } from 'three/webgpu';
+import { NoToneMapping, WebGPURenderer } from 'three/webgpu';
 
 /**
  * `isWebGPUBackend` is a runtime flag three sets on the backend; the published
@@ -53,6 +53,12 @@ export async function createPlanetRenderer(
     renderer.setSize(options.width, options.height, false);
   }
   renderer.setClearColor(0x000000, 1);
+
+  // The scene buffer holds real luminance in cd/m^2, so nothing may squash it
+  // on the way out. Exposure and tone mapping happen in the node graph instead
+  // (see `post.ts`), where a compute pass can later drive the exposure without
+  // a read back. Leaving three's own tone mapping on would map twice.
+  renderer.toneMapping = NoToneMapping;
 
   // Compute the model-view matrix on the CPU, in float64, and narrow the
   // product once — instead of narrowing the view and world matrices separately
@@ -128,6 +134,21 @@ export function assertReversedDepth(renderer: WebGPURenderer): void {
     throw new Error(
       'createPlanetRenderer: reversed depth buffer is not active. Depth ' +
         'precision at planetary scale depends on it; refusing to run without.',
+    );
+  }
+}
+
+/**
+ * Fail if something switched three's own tone mapping back on. It would run
+ * after the node graph's, and the result looks like a washed-out bug rather
+ * than a configuration mistake.
+ */
+export function assertLinearOutput(renderer: WebGPURenderer): void {
+  if (renderer.toneMapping !== NoToneMapping) {
+    throw new Error(
+      'createPlanetRenderer: renderer.toneMapping must stay NoToneMapping. ' +
+        'Exposure and tone mapping belong to the node graph in post.ts; leaving ' +
+        'the renderer to do it as well maps the image twice.',
     );
   }
 }

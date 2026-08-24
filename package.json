@@ -17,7 +17,8 @@
     "check:deps": "node scripts/check-deps.mjs",
     "check": "pnpm check:deps && pnpm lint && pnpm typecheck && pnpm test",
     "acceptance": "node scripts/acceptance.mjs",
-    "acceptance:fast": "node scripts/acceptance.mjs --fast"
+    "acceptance:fast": "node scripts/acceptance.mjs --fast",
+    "portrait": "node scripts/portrait.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",

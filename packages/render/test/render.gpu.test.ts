@@ -174,9 +174,12 @@ describe('the render path on a real device', () => {
     camera.update();
     planet.update(camera, SIZE, SIZE);
 
-    const post = createPostPipeline(renderer, scene, camera, { exposure: 1 });
+    const post = createPostPipeline(renderer, scene, camera, { ev100: 16.6 });
     expect(() => post.render()).not.toThrow();
-    post.setExposure(0.5);
+    // Two stops down has to change the multiplier by a factor of four.
+    const before = post.exposure;
+    post.setEv100(14.6);
+    expect(post.exposure / before).toBeCloseTo(4, 5);
     expect(() => post.render()).not.toThrow();
 
     post.dispose();

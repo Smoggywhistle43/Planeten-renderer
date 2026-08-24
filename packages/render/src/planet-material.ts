@@ -31,12 +31,19 @@ import {
   updateHeightUniforms,
   type HeightUniforms,
 } from '@planet/field';
-import type { Body } from '@planet/core';
+import { ALBEDO, type Body } from '@planet/core';
 import type { Node } from 'three/webgpu';
 
 export interface PlanetMaterialOptions {
-  /** Base colour. Stage 01 is deliberately a flat grey. */
-  readonly color?: number;
+  /**
+   * Albedo: the fraction of incoming light the surface reflects, 0..1, in
+   * linear light. Not a colour picked to look nice — a measured reflectance.
+   * See `ALBEDO` in `@planet/core`. Defaults to Earth's mean, 0.30.
+   *
+   * Together with a directional light whose intensity is an illuminance in
+   * lux, this makes the framebuffer hold luminance in cd/m^2.
+   */
+  readonly albedo?: number | readonly [number, number, number];
   readonly roughness?: number;
   readonly metalness?: number;
 }
@@ -62,8 +69,16 @@ export function createPlanetMaterial(
   const heightScale = uniform(1, 'float');
 
   const material = new MeshStandardNodeMaterial();
-  material.color.setHex(options.color ?? 0x9a9a9a);
-  material.roughness = options.roughness ?? 0.95;
+  const albedo = options.albedo ?? ALBEDO.earthMean;
+  // `setRGB` without a colour space writes linear values straight through.
+  // `setHex` would treat them as sRGB and silently apply a gamma curve, which
+  // would turn a measured 0.30 reflectance into 0.07.
+  if (typeof albedo === 'number') {
+    material.color.setRGB(albedo, albedo, albedo);
+  } else {
+    material.color.setRGB(albedo[0], albedo[1], albedo[2]);
+  }
+  material.roughness = options.roughness ?? 1;
   material.metalness = options.metalness ?? 0;
 
   // `attribute()` is typed loosely because the node type is a runtime string;
