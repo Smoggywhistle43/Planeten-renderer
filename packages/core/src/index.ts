@@ -34,6 +34,27 @@ export {
 } from './shape.ts';
 
 export {
+  EARTH_LAPSE_RATE,
+  EARTH_PALETTE,
+  FREEZING_POINT,
+  PALETTE_LIMITS,
+  SURFACE_ROLES,
+  luminousAlbedo,
+  paletteAlbedoTable,
+  paletteRoughnessTable,
+  parseSurfacePalette,
+  seaLevel,
+  snowLine,
+  surfacePaletteToJson,
+  surfaceTemperature,
+  type SurfaceAppearance,
+  type SurfacePalette,
+  type SurfaceParams,
+  type SurfaceRole,
+  type SurfaceThresholds,
+} from './surface.ts';
+
+export {
   BodyPose,
   angularVelocity,
   spinAngleAt,

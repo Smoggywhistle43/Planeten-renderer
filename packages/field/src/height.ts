@@ -11,7 +11,17 @@
  * implementations they drift and the terrain stops matching the collision.
  */
 
-import { Fn, float, mx_fractal_noise_float, normalize, select, uniform, vec3 } from 'three/tsl';
+import {
+  Fn,
+  dFdx,
+  dFdy,
+  float,
+  mx_fractal_noise_float,
+  normalize,
+  select,
+  uniform,
+  vec3,
+} from 'three/tsl';
 import { Vector3, type Node } from 'three/webgpu';
 import { ellipsoidMeanRadius, type Body } from '@planet/core';
 
@@ -117,6 +127,50 @@ export function heightNode(dir: Vec3Node, u: HeightUniforms): FloatNode {
 function tangentTo(dir: Vec3Node): Vec3Node {
   const axis = select(dir.z.abs().lessThan(0.9), vec3(0, 0, 1), vec3(1, 0, 0)) as Vec3Node;
   return normalize(vec3(dir).cross(axis)) as Vec3Node;
+}
+
+/**
+ * How much ground one pixel covers here, metres.
+ *
+ * The number that lets everything downstream be right *at the scale it is being
+ * asked about*. It is the length of the step the neighbouring pixel takes across
+ * the surface, which the hardware already knows: `dFdx` and `dFdy` are the
+ * difference between this pixel's value and its neighbour's, computed for free
+ * because fragments are shaded in 2x2 quads.
+ *
+ * Taking it from the *world position* rather than from the tile's vertex spacing
+ * is the whole point. A tile carries a fixed number of vertices however close
+ * the camera gets, so vertex spacing stops shrinking once you are nearer than
+ * the mesh is fine — and detail derived from it stops improving exactly when it
+ * should start mattering. The pixel footprint keeps shrinking all the way down.
+ *
+ * `positionView` is metres from the camera, which is what makes this a length in
+ * metres and not in some arbitrary unit: the camera sits at the origin, so view
+ * space *is* metres.
+ */
+export function pixelFootprint(positionView: Vec3Node): FloatNode {
+  const dx = dFdx(positionView) as Vec3Node;
+  const dy = dFdy(positionView) as Vec3Node;
+  // The larger of the two axes, not the average: a surface seen edge-on has one
+  // axis stretched far past the other, and averaging would under-estimate the
+  // step and alias along the stretched one.
+  return dx.length().max(dy.length()) as FloatNode;
+}
+
+/**
+ * The angular step to take a finite difference over, radians.
+ *
+ * Converts a footprint in metres to an angle on the unit sphere, and puts a
+ * floor under it. The floor is not tuning: two taps closer together than
+ * float32 can resolve at this magnitude return the same number, the difference
+ * comes out as exactly zero, and the surface goes flat. It is the smallest step
+ * that still carries information.
+ */
+export function footprintToAngle(footprint: FloatNode, radius: FloatNode): FloatNode {
+  const raw = float(footprint).div(radius);
+  // float32 holds about seven digits; a step below 1e-7 radians is at the edge
+  // of what a direction near unit length can represent.
+  return raw.max(1e-7) as FloatNode;
 }
 
 /**

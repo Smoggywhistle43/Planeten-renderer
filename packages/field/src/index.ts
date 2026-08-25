@@ -9,10 +9,24 @@ export {
   surfaceHeight,
   heightNode,
   surfaceNormalNode,
+  pixelFootprint,
+  footprintToAngle,
   createHeightUniforms,
   updateHeightUniforms,
   type HeightUniforms,
 } from './height.ts';
+
+export {
+  applyPalette,
+  climateSurface,
+  elevationNode,
+  humidityNode,
+  surfaceTemperatureNode,
+  temperatureAnomalyNode,
+  uniformSurface,
+  type SurfaceModel,
+  type SurfacePoint,
+} from './surface.ts';
 
 export {
   HeightSampler,

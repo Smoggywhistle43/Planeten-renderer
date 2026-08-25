@@ -7,7 +7,8 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync, readdirSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
+import { createReadStream, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -117,8 +118,12 @@ export function serveDist() {
  *
  * Returns the browser, the page and a `close()` that tears down both the
  * browser and the static server.
+ *
+ * `query` is appended to the URL — `?relief=0&surface=0` asks the explorer for
+ * the plain reference body, which is what a measurement wants and a picture
+ * does not.
  */
-export async function openExplorer({ viewport, headless = true, log = console.log }) {
+export async function openExplorer({ viewport, headless = true, log = console.log, query = '' }) {
   const { server, port } = await serveDist();
   log(`serving ${DIST} on 127.0.0.1:${port}`);
 
@@ -131,7 +136,7 @@ export async function openExplorer({ viewport, headless = true, log = console.lo
 
   const page = await browser.newPage({ viewport });
   await page.addInitScript(SWIZZLE_SHIM);
-  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load' });
+  await page.goto(`http://127.0.0.1:${port}/${query}`, { waitUntil: 'load' });
   await page.waitForFunction(
     () => window.__planet?.ready === true || typeof window.__planetError === 'string',
     { timeout: 180_000 },
@@ -206,3 +211,27 @@ export function findChromium() {
   return undefined;
 }
 
+/**
+ * Save the canvas to a PNG, reliably.
+ *
+ * Not `page.screenshot`. That captures whatever the compositor last presented,
+ * and a WebGPU canvas is not guaranteed to have presented the frame just
+ * rendered — so it returns a stale image, or a black one, at random. It is the
+ * same race that made `renderFrame` synchronous: a WebGPU canvas can only be
+ * read back in the task that drew it.
+ *
+ * This renders and copies inside one page evaluation, so there is nothing for
+ * the compositor to be late for. Every archived picture goes through it.
+ */
+export async function captureCanvas(page, path) {
+  const url = await page.evaluate(() => {
+    window.__planet.renderFrame(0);
+    const canvas = document.getElementById('view');
+    const off = document.createElement('canvas');
+    off.width = canvas.width;
+    off.height = canvas.height;
+    off.getContext('2d').drawImage(canvas, 0, 0);
+    return off.toDataURL('image/png');
+  });
+  writeFileSync(path, Buffer.from(url.split(',')[1], 'base64'));
+}

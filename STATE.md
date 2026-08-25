@@ -5,8 +5,8 @@ abgenommen.
 
 | | |
 |---|---|
-| Stufe | **02 — Der Körper**, Teil 1 bis 3 von 5 |
-| Stand | Stufe 01 abgenommen bis auf Kriterium 6. Stufe 02: Licht, Belichtung und Form stehen |
+| Stufe | **02 — Der Körper**, Teil 1 bis 3 fertig, Teil 4 angefangen |
+| Stand | Stufe 01 abgenommen bis auf Kriterium 6. Licht, Belichtung, Form stehen; die Naht zwischen Oberflächen-Mechanik und Aussehen ist gezogen |
 | Datum | 2026-08-25 |
 | Three.js | r185 (`three@0.185.1`), `three/webgpu` + `three/tsl` |
 | TypeScript | 5.9.3, `strict: true` |
@@ -30,6 +30,7 @@ und durch ESLint, nicht durch Verabredung.
 | `body.ts` | `Body` als reines, gefrorenes Parameterobjekt. Freie Funktionen für abgeleitete Größen. Keine Vererbung, keine Methoden |
 | `photometry.ts` | Die Lichtphysik: Sonne als `Star`, Abstandsgesetz, Lambert, EV100, Kamera-Dreieck, gemessene Albedos |
 | `shape.ts` | Die **Form**: Rotationsellipsoid, `surfaceRadius`, `geodeticNormal`, `curvatureRadius`, `altitudeAbove`, `hydrostaticFlattening` |
+| `surface.ts` | Die **Oberfläche**: sechs Rollen als festes Vokabular, `SurfacePalette` als Daten mit Prüfer, plus Klimamodell (Temperatur, Schneegrenze, Meeresspiegel) |
 | `orientation.ts` | Die **Drehung**: `BodyPose` (körperfeste Achsen in Weltkoordinaten), Achsneigung, Spinwinkel aus absoluter Zeit, `surfaceVelocity` |
 
 `Math.random()` ist in `core` verboten und wird an zwei Stellen geblockt.
@@ -46,6 +47,9 @@ Implementierung des Rauschens in TypeScript.
   Abgriffen derselben Funktion).
 - `sampler.ts` — `HeightSampler`: derselbe Node als Compute-Kernel mit
   Readback.
+- `surface.ts` — die Naht: `SurfacePoint` (Richtung, Höhe über Meer,
+  Pixel-Fußabdruck), `SurfaceModel` als Antwortgeber, `uniformSurface` und
+  `climateSurface`, `applyPalette` zum Austausch im Betrieb.
 
 Abnehmer 1 ist das Material in `@planet/render`, Abnehmer 2 der Compute-Pfad.
 Beide rufen dasselbe Node-Objekt.
@@ -63,6 +67,13 @@ Beide rufen dasselbe Node-Objekt.
 | `renderer.ts` | `WebGPURenderer` mit `reversedDepthBuffer` und `highPrecision`, plus Zusicherungen für beides |
 | `post.ts` | `RenderPipeline` über den TSL-Node-Stack |
 | `planet.ts` | setzt alles zusammen, platziert Tiles kamerarelativ |
+
+### paletten/
+
+Das Aussehen, als Daten. `erde.json` ist der Ausgangspunkt und identisch mit
+`EARTH_PALETTE` im Code; `lava.json` ist der Beleg, dass die Naht hält. Der
+Explorer liefert das Verzeichnis direkt aus, also lädt `?palette=/lava.json` es
+beim Start. Details in [`paletten/README.md`](paletten/README.md).
 
 ### apps/explorer
 
@@ -91,7 +102,7 @@ Fünf Teile, in Baureihenfolge. Drei stehen.
 | 2.1 | Licht in echten Einheiten | **fertig** |
 | 2.2 | Belichtung und Tonemapping | **fertig**, Automatik fehlt noch |
 | 2.3 | Form: Ellipsoid statt Kugel, Drehung, Achsneigung, körperfestes System | **fertig** |
-| 2.4 | Oberfläche: Helligkeit und Ausrichtung auf jeder Stufe, Eigenverschattung | offen |
+| 2.4 | Oberfläche: Helligkeit und Ausrichtung auf jeder Stufe, Eigenverschattung | **Naht und Fußabdruck stehen**, Eigenverschattung offen |
 | 2.5 | Bildruhe (TAA) | offen |
 
 Danach Stufe 03: echte Erddaten in diese Mechanik. Atmosphäre später.
@@ -219,6 +230,140 @@ Im Explorer: `,` und `.` ändern den Zeitraffer, `;` setzt die Uhr zurück. Bei
 1x dreht sich die Erde 15 Grad pro Stunde, also sichtbar gar nicht; bei 3600x
 dauert ein Tag 24 Sekunden.
 
+### Oberfläche: die Naht zwischen Mechanik und Aussehen
+
+Bis hierher hat der ganze Körper **eine** Zahl reflektiert: 0.30, von Pol zu
+Pol. Das ist Erdes Mittelwert — eine Zahl, die den Planeten als Punkt in einem
+Photometer beschreibt, nicht als Ort.
+
+Der erste Anlauf hat *ein* Aussehen fest in den Shader gebaut. Auf Entscheidung
+des Auftraggebers ist das aufgetrennt worden, und zwar an einer scharfen Kante:
+
+> Anstatt dass du die Erde jetzt komplett baust, bau das Fundament, worauf das
+> Aussehen gebaut wird. Die Architektur und Mechanik dahinter. Das Design mache
+> ich separat.
+
+Damit steht die Grenze so:
+
+| | |
+|---|---|
+| **Mechanik**, im Code | *dass* es Flüssigkeit, Eis und nackten Boden gibt; *wo* die Übergänge liegen (Temperatur, Höhe); auf welcher Maßstabsstufe gefragt wird |
+| **Aussehen**, als Daten | wie jede Rolle aussieht; wie weich jeder Übergang ist |
+
+#### Die Naht
+
+Das Material weiß nicht, woraus der Boden besteht. Es weiß, wie man fragt:
+
+```
+An dieser Richtung, so viele Meter über dem Meeresspiegel,
+mit einem Pixel, das so viel Boden abdeckt —
+was ist die Reflektanz und wie rau ist es?
+```
+
+Das ist `SurfacePoint`, und wer antwortet, ist ein `SurfaceModel`. Drei
+Antworten gibt es heute, die vierte ist der Zweck der Übung:
+
+| | |
+|---|---|
+| `uniformSurface` | eine Reflektanz überall. Was jede Messung braucht — der Abnahmelauf zählt Pixel, und eine Küstenlinie ist ein großer, berechtigter Sprung, den sein Speckle-Test nicht von Tiefenflimmern unterscheiden kann |
+| `climateSurface` | die prozedurale. Temperatur und Höhe wählen eine **Rolle**, eine `SurfacePalette` sagt, wie die Rolle aussieht |
+| eigenes Modell | alles, was das Interface erfüllt |
+| *später* | gemessene Daten: Copernicus-Höhen, Sentinel-2-Reflektanzen. Sie beantworten dieselbe Frage, also ändert sich oberhalb der Naht nichts |
+
+#### Sechs Rollen, kein Erdvokabular
+
+Der Shader kennt sechs Rollen und keine siebte. Sie heißen nach dem, was sie
+**sind**, nicht danach, wie die Erde sie einkleidet: `water` ist, was an der
+Oberfläche flüssig ist — hier Ozean, auf einem Körper nahe genug an seinem Stern
+geschmolzenes Gestein. `ice` ist dieselbe Flüssigkeit, gefroren.
+
+Belegt statt behauptet: `paletten/lava.json` legt `water` auf glühendes Orange,
+`ice` und `snow` auf dunkle Kruste und verbreitert die Küstenüberblendung — und
+derselbe Körper, dieselbe Physik, derselbe Shader rendern eine Lavawelt. Die
+Eiskappe liegt weiterhin da, wo die Temperatur sie hinlegt.
+
+Die Palette liegt in Uniforms, nicht im Graph: sie lässt sich **zwischen zwei
+Frames** austauschen, ohne Shader-Neubau. `?palette=/erde.json` beim Start,
+`window.__planet.setPalette(json)` im Betrieb.
+
+#### Der Fußabdruck
+
+Das Stück, das man leicht weglässt und teuer nachrüstet: **wie viel Boden ein
+Pixel abdeckt**, in Metern. Aus dem Orbit sind das Kilometer, auf der Oberfläche
+Zentimeter, und eine Antwort, die das ignoriert, ist an einem der beiden Enden
+falsch.
+
+Der Normalenschritt kommt jetzt daher und nicht mehr aus der Vertexdichte des
+Tiles. Ein Tile trägt eine feste Zahl Vertices, egal wie nah die Kamera kommt —
+also hört die daraus abgeleitete Detailtiefe genau dann auf besser zu werden,
+wenn sie anfängt zu zählen. Der Fußabdruck schrumpft weiter, bis nach unten
+durch. `dFdx`/`dFdy` liefern ihn umsonst, weil Fragmente in 2x2-Blöcken
+schattiert werden.
+
+#### Die Prüfung, die eine Palette bestehen muss
+
+`parseSurfacePalette` nimmt Daten von außen an und weist zurück, statt zu
+reparieren — mit **allen** Fehlern auf einmal. Zwei Grenzen sind keine
+Geschmacksfrage, sondern Arithmetik:
+
+- Reflektanz über 1 gäbe mehr Licht zurück, als ankommt.
+- Rauheit unter 0.2 wirft ein Glanzlicht über 65 504 cd/m², sprengt den
+  Halbfloat-Framebuffer und wird nach dem Tonemapping schwarz.
+
+### Fünf Dinge, die das Bild gelehrt hat
+
+Alle fünf waren im Bild sichtbar, bevor sie verstanden waren. Für einen
+Renderer, der echt aussehen soll, ist Hinsehen ein Messverfahren.
+
+**1. Ein schwarzes Loch mitten im Ozean.** Wasser mit Rauheit 0.08 ist ein
+Spiegel; der Sonnenglanz erreicht etwa 5 Millionen cd/m², der Framebuffer endet
+bei 65 504, geschrieben wurde Unendlich, AgX macht daraus Schwarz. Jetzt 0.5,
+und das ist keine Geschmacksfrage: aus dem Orbit deckt ein Pixel Kilometer
+Meeresoberfläche ab, und was das Licht trifft, ist die Hangverteilung der Wellen.
+Cox und Munk haben die 1954 aus Sonnenglitzer-Fotografien gemessen — RMS-Hang
+etwa 0.2 bei mäßigem Wind, also GGX-Rauheit nahe 0.5. Die Grenze steht jetzt im
+Palettenprüfer, damit es niemand wieder tut.
+
+**2. Eine Eiskappe bis 47 Grad Breite.** Das Temperaturmodell fiel mit dem
+*Quadrat* des Breitensinus — die reine Einstrahlungsform. Atmosphäre und Ozean
+tragen Wärme polwärts, was das Profil in den Tropen abflacht. Die *vierte*
+Potenz trifft Erdes gemessene Zonalmittel auf wenige Kelvin; das Quadrat liegt
+bei 45 Grad 12 K zu tief. Die Eisgrenze wandert von 47 auf 59 Grad.
+`surface.test.ts` prüft gegen die gemessenen Werte, nicht gegen eine Form, die
+jemandem gefallen hat.
+
+**3. Eine Eiskante wie mit dem Zirkel gezogen.** Breite allein zeichnet einen
+Planeten mit dem Zirkel. Die Erde ist nicht so, und der Grund ist physikalisch:
+der Golfstrom hält Nordnorwegen etwa 10 K über dem Zonalmittel und eisfrei, wo
+Labrador auf gleicher Breite zufriert. Dafür gibt es ein Anomaliefeld von ±8 K.
+Der erste Versuch war zu großräumig angesetzt und verschob die ganze Kappe,
+statt ihrer Kante eine Form zu geben; Maßstab ist jetzt etwa 0.4 Radiant, die
+Größe eines Ozeanbeckens.
+
+**4. Ein Kontinentanteil von 1.8 Prozent.** `terrain.amplitude` ist eine
+**obere Schranke**, nicht das Relief: fraktales Rauschen erreicht seine eigenen
+Extremwerte praktisch nie. Gemessen über 4000 Punkte liefern sechs Oktaven bei
+Gain 0.5 etwa **45 %** des nominellen Werts. Ein Meeresspiegel bei 0.32 der
+Amplitude überflutete 98 % des Körpers; der gemessene Wert für Erdes 71 % Ozean
+ist **0.081**.
+
+| | |
+|---|---|
+| Landanteil des Referenzkörpers | 29.1 % (Erde: 29.2 %) |
+| davon unter Schnee | ein Drittel |
+| tiefster Punkt | −10.7 km (Marianengraben: −11.0) |
+| höchster Punkt | +7.5 km (Everest: +8.8) |
+
+**5. Jedes archivierte Bild war ein Münzwurf.** `page.screenshot` nimmt auf, was
+der Compositor zuletzt dargestellt hat — und ein WebGPU-Canvas hat den gerade
+gezeichneten Frame nicht garantiert dargestellt. Ein Teil der Abnahmebilder war
+schwarz oder einen Frame alt, ohne dass irgendwo etwas gemeldet wurde; eine
+Weile lang habe ich Diagnosen an Bildern gestellt, die einen älteren Zustand
+zeigten. Dieselbe Falle wie bei `renderFrame`: ein WebGPU-Canvas lässt sich nur
+in dem Task zurücklesen, in dem gezeichnet wurde. `captureCanvas` zeichnet und
+kopiert in **einer** Auswertung; jedes archivierte Bild geht jetzt darüber.
+Ausnahme ist die Overlay-Aufnahme, denn das Overlay ist DOM.
+
 ### Ansichten
 
 `pnpm portrait` rendert einen Satz Bilder nach `artifacts/portrait/` —
@@ -275,13 +420,15 @@ auftaucht.
 
 | Name | Ort | Prüfsumme | Stufe |
 |---|---|---|---|
-| `parameters` | `packages/core/test/golden/parameters.json` | `0xeffcac24` | 02 (aktuell) |
+| `parameters` | `packages/core/test/golden/parameters.json` | `0xdc129c45` | 02 (aktuell) |
 | `stage-01` | `docs/abnahme/stufe-01/parameter-snapshot.json` | `0x233c912e` | 01, archiviert |
 
-Die Prüfsumme hat sich in Stufe 2.3 geändert, und zwar mit Absicht: `Body`
-trägt statt `radius` nun `equatorialRadius` und `flattening`, und die
-Abplattung wird aus Masse und Rotationsdauer gerechnet. Damit sehen alle
-erzeugten Körper anders aus als in Stufe 01. Der alte Snapshot liegt
+Die Prüfsumme hat sich in dieser Stufe zweimal geändert, beide Male mit
+Absicht. In Teil 2.3, weil `Body` statt `radius` nun `equatorialRadius` und
+`flattening` trägt und die Abplattung aus Masse und Rotationsdauer folgt
+(`0x233c912e` → `0xeffcac24`). In Teil 2.4, weil `Body` eine `surface` bekommen
+hat: Meeresspiegel, Klima und Feuchtefeld (`0xeffcac24` → `0xdc129c45`). Damit
+sehen alle erzeugten Körper anders aus als in Stufe 01. Der alte Snapshot liegt
 unverändert im Abnahmeordner der Stufe 01, damit nachvollziehbar bleibt, was
 sich geändert hat.
 
@@ -318,7 +465,7 @@ archivierte Parameter-Snapshot der Stufe 01 und ausgewählte Bilder.
 
 | # | Kriterium | Stand |
 |---|---|---|
-| 1 | `pnpm test` grün, Golden Tests bestehen | **erfüllt** — 301 Tests: 267 in Node, 34 gegen ein echtes WebGPU-Gerät |
+| 1 | `pnpm test` grün, Golden Tests bestehen | **erfüllt** — 351 Tests: 304 in Node, 47 gegen ein echtes WebGPU-Gerät |
 | 2 | `pnpm check:deps` bestätigt: `core` ohne `three` | **erfüllt** |
 | 3 | Körper mit mittlerem Radius 6.371e6 m | **erfüllt, neu gemessen** — siehe unten. Das Kriterium hieß in Stufe 01 „graue Kugel"; seit Stufe 2.3 ist der Körper ein Ellipsoid mit demselben mittleren Radius |
 | 4 | Flug 1e9 → 1e3 m ohne Zittern, ohne Z-Fighting | **erfüllt** — siehe unten |
@@ -623,7 +770,23 @@ Der Reihe nach, mit Begründung.
    Radius liegt weiter bei 6 371 008.8 m, der Körper ist aber keine Kugel mehr.
    Der Fit gehört auf eine Ellipse umgestellt.
 
-8. **Der Explorer bündelt 870 kB.** Fast alles davon ist `three/webgpu`. Kein
+8. **Eigenverschattung fehlt.** Ein Berg wirft keinen Schatten auf das Gelände
+   daneben, ein Kraterrand nicht auf seinen eigenen Boden. Am Terminator ist das
+   der auffälligste fehlende Effekt und der Unterschied zwischen „aufgemalter
+   Struktur" und echtem Gelände. Der Weg dorthin ist ein Marsch entlang der
+   Lichtrichtung durch dasselbe Höhenfeld — reine Mechanik, kein Aussehen.
+
+9. **Die Vertex-Verschiebung ist nicht bandbegrenzt.** Der *Schattierung*
+   liegt jetzt der Pixel-Fußabdruck zugrunde, dem *Gitter* aber nichts: ein
+   grobes Tile verschiebt seine Vertices mit dem vollen Höhenfeld, auch mit
+   Oktaven, die es gar nicht abbilden kann. `tileInfo.y` trägt die
+   Vertexdichte bereits, es fehlt die Begrenzung im Vertex-Pfad.
+
+10. **Die Klimazahlen sind vorgegeben, nicht hergeleitet.** `equatorTemperature`
+   und `poleTemperature` werden gewürfelt. Herleiten hieße Strahlungsbilanz,
+   und dafür braucht ein Körper eine Bahn; Bahnen gibt es noch nicht.
+
+11. **Der Explorer bündelt 870 kB.** Fast alles davon ist `three/webgpu`. Kein
    Code-Splitting, weil es nichts zu splitten gibt.
 
 ---

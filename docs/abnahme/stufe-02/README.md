@@ -25,9 +25,10 @@ Kein Gatter — Bilder zum Anschauen, aus `pnpm portrait`.
 
 | Datei | Was es zeigt |
 |---|---|
-| `01-voll-beleuchtet.png` | Sonne hinter der Kamera. Volle Scheibe, kein Terminator |
+| `01-voll-beleuchtet.png` | Sonne hinter der Kamera. Ozean, Kontinente, Eiskappe und der Sonnenglanz auf dem Wasser |
+| `lava` (nicht hier) | `pnpm dev` mit `?palette=/lava.json` — derselbe Körper, dieselbe Physik, andere Daten |
 | `02-terminator.png` | Sonne 75 Grad seitlich. Der Übergang von Tag zu Nacht |
-| `06-pol.png` | Sonne fast von oben. Die Achsneigung von 23.4 Grad steht im Bild |
+| `06-pol.png` | Von oben auf die Drehachse. Hier zeigt sich die Eiskappe als Kappe und nicht als Streifen am Rand |
 | `drehung-00h.png`, `drehung-12h.png` | Derselbe Blick, zwölf Stunden auseinander |
 | `belichtung-m4.png`, `belichtung-p4.png` | Vier Blenden heller und vier dunkler als gemessen |
 
@@ -36,6 +37,13 @@ wäre auf einem glatten grauen Körper von der Drehung nichts zu sehen — Kamer
 fest, Sonne fest, keine Merkmale. Auch so zeigt sie sich nur an der Kontur.
 Das überzeugende Bild kommt mit Teil 2.4. Bewiesen wird die Drehung bis dahin
 von den Tests, nicht von den Bildern.
+
+> **Zu den Bildern:** alle gehen durch `captureCanvas`, das im selben Task
+> zeichnet und kopiert. `page.screenshot` nimmt auf, was der Compositor zuletzt
+> dargestellt hat, und ein WebGPU-Canvas hat den gerade gezeichneten Frame nicht
+> garantiert dargestellt — ein Teil der früheren Abnahmebilder war schwarz oder
+> einen Frame alt, ohne dass etwas gemeldet wurde. Ausnahme ist `hud-*.png`,
+> weil das Overlay DOM ist.
 
 ## Was hier nicht drin ist
 

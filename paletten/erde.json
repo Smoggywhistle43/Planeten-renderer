@@ -1,0 +1,61 @@
+{
+  "name": "earth",
+  "roles": {
+    "water": {
+      "albedo": [
+        0.025,
+        0.06,
+        0.12
+      ],
+      "roughness": 0.5
+    },
+    "ice": {
+      "albedo": [
+        0.58,
+        0.6,
+        0.63
+      ],
+      "roughness": 0.6
+    },
+    "snow": {
+      "albedo": [
+        0.86,
+        0.86,
+        0.88
+      ],
+      "roughness": 0.85
+    },
+    "barren": {
+      "albedo": [
+        0.2,
+        0.165,
+        0.13
+      ],
+      "roughness": 0.95
+    },
+    "arid": {
+      "albedo": [
+        0.43,
+        0.34,
+        0.21
+      ],
+      "roughness": 0.9
+    },
+    "fertile": {
+      "albedo": [
+        0.08,
+        0.15,
+        0.05
+      ],
+      "roughness": 1
+    }
+  },
+  "thresholds": {
+    "coastBlendMetres": 60,
+    "snowBlendKelvin": 3,
+    "iceBlendKelvin": 6,
+    "aridBelow": 0.3,
+    "fertileAbove": 0.75,
+    "fertileNeedsKelvin": 12
+  }
+}

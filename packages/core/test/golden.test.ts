@@ -32,7 +32,7 @@ import { BODY_CLASSES } from '../src/body.ts';
  * The history of these lives in STATE.md, one row per accepted stage, so a
  * change to world generation leaves a dated trail rather than a silent diff.
  */
-const PARAMETER_CHECKSUM = '0xeffcac24';
+const PARAMETER_CHECKSUM = '0xdc129c45';
 
 const HASH_VECTORS: readonly (readonly number[])[] = [
   [0],

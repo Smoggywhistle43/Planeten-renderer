@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import {
   ARTIFACTS,
   buildExplorer,
+  captureCanvas,
   openExplorer,
   setChromeVisible,
   stepFrames,
@@ -29,17 +30,19 @@ const OUT = join(ARTIFACTS, 'portrait');
 const VIEWPORT = { width: 1280, height: 800 };
 
 /**
- * Sun directions, as the angle between the sun and the camera's line of sight.
+ * Point the sun a given angle away from the camera's line of sight.
  *
  * 0 degrees is the sun directly behind the camera: a flat, fully lit disc, and
  * the least informative picture a planet renderer can produce. Everything
  * interesting happens past 60.
+ *
+ * The harness does the maths, because it knows where the camera actually is.
+ * This used to assume the camera sat on +X, which stopped being true the moment
+ * the flight path changed and turned every portrait into a night-side picture
+ * without anything reporting a problem.
  */
-function sunAtPhaseAngle(degrees) {
-  // The camera always sits on +X looking towards the origin. Rotate the sun
-  // away from that axis in the XZ plane, tilted a little for a natural look.
-  const a = (degrees * Math.PI) / 180;
-  return [Math.cos(a), 0.25, Math.sin(a)];
+async function setSunAtPhase(page, degrees) {
+  await page.evaluate((d) => window.__planet.setSunAtPhaseAngle(d), degrees);
 }
 
 const SHOTS = [
@@ -124,31 +127,35 @@ async function main() {
     );
     await page.evaluate(() => window.__planet.setFlightRunning(false));
     await setChromeVisible(page, false);
+    // True scale relief everywhere except the rotation series, which says so.
+    await page.evaluate(() => window.__planet.setHeightScale(1));
 
     const metered = await page.evaluate(() => window.__planet.meteredEv100());
     log(`gemessene Belichtung: EV ${metered.toFixed(2)}`);
 
     for (const shot of SHOTS) {
       log(`${shot.name} …`);
-      const sun = sunAtPhaseAngle(shot.phaseDegrees);
-      await page.evaluate((s) => window.__planet.setSunDirection(s[0], s[1], s[2]), sun);
       await page.evaluate((a) => window.__planet.setAltitude(a), shot.altitude);
       await page.evaluate((t) => window.__planet.setTilt(t), shot.tilt);
+      // After the camera is in place: the phase angle is measured from where it
+      // actually ended up.
+      await page.evaluate(() => window.__planet.renderFrame(0));
+      await setSunAtPhase(page, shot.phaseDegrees);
       await page.evaluate((ev) => window.__planet.setEv100(ev), metered);
       await stepFrames(page, 240);
 
       const file = join(OUT, `${shot.name}.png`);
-      await page.screenshot({ path: file });
+      await captureCanvas(page, file);
       index.push({ ...shot, file: `${shot.name}.png`, ev100: metered });
     }
 
     // The exposure ladder, on the terminator shot, because that is where over-
     // and under-exposure are most obvious.
     const ladderShot = SHOTS[1];
-    const sun = sunAtPhaseAngle(ladderShot.phaseDegrees);
-    await page.evaluate((s) => window.__planet.setSunDirection(s[0], s[1], s[2]), sun);
     await page.evaluate((a) => window.__planet.setAltitude(a), ladderShot.altitude);
     await page.evaluate((t) => window.__planet.setTilt(t), ladderShot.tilt);
+    await page.evaluate(() => window.__planet.renderFrame(0));
+    await setSunAtPhase(page, ladderShot.phaseDegrees);
     await stepFrames(page, 120);
 
     for (const stops of EXPOSURE_LADDER) {
@@ -157,7 +164,7 @@ async function main() {
       await page.evaluate((ev) => window.__planet.setEv100(ev), metered + stops);
       await stepFrames(page, 8);
       const name = `belichtung-${stops >= 0 ? 'p' : 'm'}${Math.abs(stops)}`;
-      await page.screenshot({ path: join(OUT, `${name}.png`) });
+      await captureCanvas(page, join(OUT, `${name}.png`));
       index.push({
         name,
         caption: `Terminator, ${label} — ${stops > 0 ? 'dunkler' : stops < 0 ? 'heller' : 'wie gemessen'}`,
@@ -169,10 +176,10 @@ async function main() {
     }
 
     // ---- the rotation, over one day -------------------------------------
-    const rotationSun = sunAtPhaseAngle(ROTATION_PHASE_DEGREES);
-    await page.evaluate((sun) => window.__planet.setSunDirection(sun[0], sun[1], sun[2]), rotationSun);
     await page.evaluate(() => window.__planet.setAltitude(1.2e7));
     await page.evaluate(() => window.__planet.setTilt(0));
+    await page.evaluate(() => window.__planet.renderFrame(0));
+    await setSunAtPhase(page, ROTATION_PHASE_DEGREES);
     await page.evaluate((k) => window.__planet.setHeightScale(k), ROTATION_RELIEF_SCALE);
     await page.evaluate((ev) => window.__planet.setEv100(ev), metered);
 
@@ -182,7 +189,7 @@ async function main() {
       log(`${name} …`);
       await page.evaluate((seconds) => window.__planet.setTime(seconds), fraction * DAY_SECONDS);
       await stepFrames(page, 200);
-      await page.screenshot({ path: join(OUT, `${name}.png`) });
+      await captureCanvas(page, join(OUT, `${name}.png`));
       index.push({
         name,
         caption:
@@ -199,20 +206,26 @@ async function main() {
     // Straight down the rotation axis, where a flattened body shows its short
     // radius and a sphere would look identical to every other view.
     log('06-pol …');
-    await page.evaluate(() => window.__planet.setHeightScale(0));
+    await page.evaluate(() => window.__planet.setHeightScale(1));
     await page.evaluate(() => window.__planet.setTime(0));
-    await page.evaluate((sun) => window.__planet.setSunDirection(sun[0], sun[1], sun[2]), [0.3, 0.9, 0.3]);
+    // Over the pole, not merely lit from above: the camera itself moves there.
+    await page.evaluate(() => window.__planet.setLatitude(Math.PI / 2));
     await page.evaluate(() => window.__planet.setAltitude(1.2e7));
+    await page.evaluate(() => window.__planet.renderFrame(0));
+    await page.evaluate(() => window.__planet.setSunAtPhaseAngle(35, 0));
     await stepFrames(page, 240);
-    await page.screenshot({ path: join(OUT, '06-pol.png') });
+    await captureCanvas(page, join(OUT, '06-pol.png'));
     index.push({
       name: '06-pol',
-      caption: 'Sonne fast von oben. Die Achsneigung von 23.4 Grad steht im Bild.',
+      caption:
+        'Von oben auf die Drehachse. Hier zeigt sich die Eiskappe als Kappe und ' +
+        'nicht als Streifen am Rand.',
       altitude: 1.2e7,
-      phaseDegrees: 0,
+      phaseDegrees: 35,
       file: '06-pol.png',
       ev100: metered,
     });
+    await page.evaluate(() => window.__planet.setLatitude(0.34));
 
     await setChromeVisible(page, true);
   } finally {

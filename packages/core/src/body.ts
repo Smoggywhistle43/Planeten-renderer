@@ -17,6 +17,7 @@ import {
   type Ellipsoid,
 } from './shape.ts';
 import type { Spinning } from './orientation.ts';
+import { EARTH_LAPSE_RATE, type SurfaceParams } from './surface.ts';
 
 /** Gravitational constant, m^3 kg^-1 s^-2 (CODATA 2018). */
 export const G = 6.6743e-11;
@@ -53,7 +54,20 @@ export const BODY_CLASSES: readonly BodyClass[] = [
  * only place the noise itself lives.
  */
 export interface TerrainParams {
-  /** Peak-to-mean displacement in metres. */
+  /**
+   * Displacement scale in metres — an **upper bound**, not the relief you get.
+   *
+   * The octave amplitudes are normalised so that their theoretical maximum sums
+   * to this, but fractal noise essentially never reaches its own extremes: with
+   * six octaves at gain 0.5, the achieved peak is about 45 % of the nominal
+   * figure, measured over 4000 points in `surface.gpu.test.ts`. So a body asked
+   * for 20 km of amplitude ends up with about +/- 9 km of actual relief, which
+   * is Earth's range.
+   *
+   * The bound is what the LOD and the tile bounds use, and being generous there
+   * is the safe direction — it means a tile is never smaller than the terrain
+   * inside it.
+   */
   readonly amplitude: number;
   /** Cycles per unit sphere radius at the base octave. */
   readonly frequency: number;
@@ -90,6 +104,8 @@ export interface Body extends Ellipsoid, Spinning {
   /** Mass, kilograms. */
   readonly mass: number;
   readonly terrain: TerrainParams;
+  /** What the ground is made of, and where. See `surface.ts`. */
+  readonly surface: SurfaceParams;
 }
 
 /** Parameter ranges per class. Data, not code. */
@@ -99,14 +115,71 @@ const CLASS_RANGES: Record<
     radius: readonly [number, number];
     density: readonly [number, number];
     reliefFraction: readonly [number, number];
+    /** Sea level as a fraction of the relief. Higher floods more of the body. */
+    seaLevel: readonly [number, number];
+    /** Mean equatorial surface temperature, kelvin. */
+    equatorTemperature: readonly [number, number];
+    /** How much colder the poles are than the equator, kelvin. */
+    poleDrop: readonly [number, number];
   }
 > = {
-  rocky: { radius: [2.0e6, 8.0e6], density: [3800, 6000], reliefFraction: [8e-4, 2.5e-3] },
-  ocean: { radius: [3.0e6, 9.0e6], density: [3200, 5200], reliefFraction: [4e-4, 1.4e-3] },
-  ice: { radius: [1.0e6, 3.0e6], density: [1200, 2600], reliefFraction: [6e-4, 2.0e-3] },
-  desert: { radius: [2.0e6, 7.0e6], density: [3600, 5600], reliefFraction: [1.0e-3, 3.0e-3] },
-  gasGiant: { radius: [2.5e7, 7.5e7], density: [600, 1600], reliefFraction: [0, 0] },
-  moon: { radius: [3.0e5, 2.0e6], density: [1800, 3600], reliefFraction: [1.5e-3, 5.0e-3] },
+  rocky: {
+    radius: [2.0e6, 8.0e6],
+    density: [3800, 6000],
+    reliefFraction: [8e-4, 2.5e-3],
+    // Measured against the height distribution, not guessed: -0.09 floods
+    // about 30 % of a body, +0.11 about 80 %. See `surface.gpu.test.ts`.
+    seaLevel: [-0.09, 0.11],
+    equatorTemperature: [280, 315],
+    poleDrop: [35, 70],
+  },
+  ocean: {
+    radius: [3.0e6, 9.0e6],
+    density: [3200, 5200],
+    reliefFraction: [4e-4, 1.4e-3],
+    // Nearly everything under water, and an ocean evens the temperature out.
+    seaLevel: [0.15, 0.3],
+    equatorTemperature: [285, 305],
+    poleDrop: [20, 45],
+  },
+  ice: {
+    radius: [1.0e6, 3.0e6],
+    density: [1200, 2600],
+    reliefFraction: [6e-4, 2.0e-3],
+    seaLevel: [-0.13, 0.07],
+    // Below freezing everywhere: the snow line reaches the sea at every
+    // latitude, which is what makes an ice world an ice world.
+    equatorTemperature: [200, 258],
+    poleDrop: [20, 60],
+  },
+  desert: {
+    radius: [2.0e6, 7.0e6],
+    density: [3600, 5600],
+    reliefFraction: [1.0e-3, 3.0e-3],
+    // No standing water to speak of: below the lowest point of the field.
+    seaLevel: [-0.6, -0.35],
+    equatorTemperature: [300, 340],
+    poleDrop: [50, 90],
+  },
+  gasGiant: {
+    radius: [2.5e7, 7.5e7],
+    density: [600, 1600],
+    reliefFraction: [0, 0],
+    // No surface at all. These numbers exist so the record is complete; a gas
+    // giant needs its own shading model and does not have one yet.
+    seaLevel: [0, 0],
+    equatorTemperature: [120, 170],
+    poleDrop: [5, 20],
+  },
+  moon: {
+    radius: [3.0e5, 2.0e6],
+    density: [1800, 3600],
+    reliefFraction: [1.5e-3, 5.0e-3],
+    // Airless: nothing stands as liquid, and day and night swing wildly.
+    seaLevel: [-1, -1],
+    equatorTemperature: [180, 400],
+    poleDrop: [80, 200],
+  },
 };
 
 /** Stable id from a seed: eight lowercase hex digits. */
@@ -159,6 +232,34 @@ export function makeBody(seed: Seed, options: MakeBodyOptions = {}): Body {
     offset: [rng.nextRange(-512, 512), rng.nextRange(-512, 512), rng.nextRange(-512, 512)],
   };
 
+  // The surface draws from the *surface* seed, not the body seed. That keeps
+  // the ground independent of the shape: re-rolling what a world looks like
+  // must not move its mountains, and vice versa.
+  const surfaceRng = Pcg32.from(surfaceSeed(seed));
+  const equatorTemperature = surfaceRng.nextRange(
+    range.equatorTemperature[0],
+    range.equatorTemperature[1],
+  );
+  const surface: SurfaceParams = {
+    seaLevelFraction: surfaceRng.nextRange(range.seaLevel[0], range.seaLevel[1]),
+    equatorTemperature,
+    poleTemperature:
+      equatorTemperature - surfaceRng.nextRange(range.poleDrop[0], range.poleDrop[1]),
+    lapseRate: surfaceRng.nextRange(0.004, 0.011),
+    humidityFrequency: surfaceRng.nextRange(0.8, 2.6),
+    humidityOffset: [
+      surfaceRng.nextRange(-512, 512),
+      surfaceRng.nextRange(-512, 512),
+      surfaceRng.nextRange(-512, 512),
+    ],
+    temperatureAnomaly: surfaceRng.nextRange(3, 12),
+    anomalyOffset: [
+      surfaceRng.nextRange(-512, 512),
+      surfaceRng.nextRange(-512, 512),
+      surfaceRng.nextRange(-512, 512),
+    ],
+  };
+
   const body: Body = {
     id: bodyId(seed),
     seed,
@@ -172,6 +273,7 @@ export function makeBody(seed: Seed, options: MakeBodyOptions = {}): Body {
     axialTiltAzimuth,
     spinAtEpoch,
     terrain,
+    surface,
     ...options.overrides,
   };
 
@@ -208,6 +310,25 @@ export function referenceBody(seed: Seed = 1): Body {
       lacunarity: 2.0,
       gain: 0.5,
       offset: [0, 0, 0] as readonly [number, number, number],
+    }),
+    // Earth's real climate figures, so the reference body's ice caps and snow
+    // lines land where Earth's do. Sea level sits a third of the way up the
+    // relief, which is roughly what floods 71 % of a body like this — though
+    // with `terrain.amplitude` at 0 there is no relief to flood, and the whole
+    // reference body reads as ocean until the height field is switched on.
+    surface: Object.freeze({
+      // Measured, not chosen: this floods 71 % of the reference body, which is
+      // Earth's ocean fraction. The height field is far more peaked than its
+      // nominal amplitude suggests, so this number is much smaller than it
+      // looks — see `TerrainParams.amplitude`.
+      seaLevelFraction: 0.081,
+      equatorTemperature: 300,
+      poleTemperature: 250,
+      lapseRate: EARTH_LAPSE_RATE,
+      humidityFrequency: 1.6,
+      humidityOffset: [0, 0, 0] as readonly [number, number, number],
+      temperatureAnomaly: 8,
+      anomalyOffset: [37, -12, 91] as readonly [number, number, number],
     }),
   });
 }

@@ -44,7 +44,8 @@ export class Flight {
   /** Extra pitch from the mouse, radians. */
   pitch = 0;
 
-  private readonly latitude = 0.34;
+  /** Latitude of the camera's track, radians. Not a place on the ground. */
+  latitude = 0.34;
 
   constructor(options: FlightOptions = {}) {
     this.startAltitude = options.startAltitude ?? 1e9;

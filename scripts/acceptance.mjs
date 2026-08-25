@@ -40,6 +40,7 @@ import {
   DIST,
   SWIZZLE_SHIM,
   buildExplorer,
+  captureCanvas,
   findChromium,
   serveDist,
   setChromeVisible,
@@ -534,7 +535,13 @@ async function main() {
     page.on('pageerror', (e) => consoleErrors.push(String(e)));
 
     await page.addInitScript(SWIZZLE_SHIM);
-    await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load' });
+    // The plain reference body: no relief, one reflectance everywhere.
+    // Criterion 3 asks for an exact shape, and 9 km of mountains is 0.14 % of
+    // the radius standing between the measurement and the answer; a coastline
+    // is a large, legitimate jump between neighbouring pixels, which the
+    // speckle test cannot tell from depth flicker. The interesting body lives
+    // in `pnpm portrait`, where nothing is counted.
+    await page.goto(`http://127.0.0.1:${port}/?relief=0&surface=0`, { waitUntil: 'load' });
     await page.waitForFunction(
       () => window.__planet?.ready === true || typeof window.__planetError === 'string',
       { timeout: 180_000 },
@@ -772,16 +779,19 @@ async function main() {
       const tag = altitude.toExponential(0).replace('+', '');
       // With the HUD, for criteria 5 and 6; and without, so criteria 3 and 4
       // can be judged on the render rather than on a panel covering it.
+      // The overlay is DOM, so this one has to go through the page screenshot;
+      // `captureCanvas` would return the canvas without it. The canvas
+      // underneath may be a frame stale — the overlay text is the point here.
       await page.screenshot({ path: join(ARTIFACTS, `hud-${tag}.png`) });
       await setChromeVisible(page, false);
       await stepFrames(page, 1, 0);
-      await page.screenshot({ path: join(ARTIFACTS, `altitude-${tag}.png`) });
+      await captureCanvas(page, join(ARTIFACTS, `altitude-${tag}.png`));
 
       // And once more with per-tile colouring, which is the only way to see
       // the quadtree actually subdividing in a still image.
       await page.evaluate(() => window.__planet.setLodDebug(1));
       await stepFrames(page, 1, 0);
-      await page.screenshot({ path: join(ARTIFACTS, `lod-${tag}.png`) });
+      await captureCanvas(page, join(ARTIFACTS, `lod-${tag}.png`));
       await page.evaluate(() => window.__planet.setLodDebug(0));
       await setChromeVisible(page, true);
       await stepFrames(page, 1, 0);

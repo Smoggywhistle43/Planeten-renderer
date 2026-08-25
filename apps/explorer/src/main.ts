@@ -13,8 +13,10 @@ import {
   ASTRONOMICAL_UNIT,
   SUN,
   Vec3d,
+  rotateAbout,
   ev100FromLuminance,
   illuminanceAtDistance,
+  parseSurfacePalette,
   referenceBody,
   subsolarLuminance,
   type Body,
@@ -29,11 +31,28 @@ import {
   type DepthConfiguration,
   type PlanetStats,
 } from '@planet/render';
+import { applyPalette } from '@planet/field';
 import { Flight } from './flight.ts';
 import { Overlay } from './overlay.ts';
 
 /** How much relief the `H` key dials in. Zero is the acceptance configuration. */
-const TERRAIN_PREVIEW_AMPLITUDE = 12_000;
+/**
+ * How much relief the explorer's body has, metres.
+ *
+ * Earth runs about 20 km from the Mariana Trench to Everest. This is the
+ * *nominal* amplitude, which the noise never fully reaches — the achieved relief
+ * is about 45 % of it, so 20 km asked for gives roughly +/- 9 km, which is
+ * Earth's range. See `TerrainParams.amplitude`.
+ *
+ * It is a real part of the body — the LOD scheduler, the tile bounds and the
+ * skirts all know about it — and not a preview switched on afterwards, which is
+ * what a display-only amplitude used to be and why LOD seams could crack.
+ *
+ * `?relief=0` builds the flat reference body instead. The acceptance run uses
+ * that: criterion 3 asks for an exact shape, and 9 km of mountains is 0.14 %
+ * of the radius standing between the measurement and the answer.
+ */
+const DEFAULT_RELIEF_METRES = 20_000;
 
 const BODY_CENTRE = new Vec3d(0, 0, 0);
 
@@ -86,6 +105,8 @@ export interface PlanetHarness {
   /** Nudge the camera sideways along the surface, metres. For jitter probing. */
   nudgeAlong(metres: number): void;
   setTilt(tilt: number): void;
+  /** Move the camera's track to a latitude, radians. PI/2 is over the pole. */
+  setLatitude(radians: number): void;
   setFlightRunning(running: boolean): void;
   /**
    * Put the body where it is at `seconds` past the epoch.
@@ -97,6 +118,23 @@ export interface PlanetHarness {
   /** How many simulated seconds pass per real second. 1 is real time. */
   setTimeScale(scale: number): void;
   setLodDebug(amount: number): void;
+  /**
+   * How much of the ground's own reflectance to show. 1 is the real surface,
+   * 0 is one flat albedo over the whole body — which is what the acceptance
+   * run measures geometry against.
+   */
+  setSurfaceMix(amount: number): void;
+  /**
+   * Swap the look, live.
+   *
+   * Takes the JSON form of a palette — see `paletten/README.md`. The palette
+   * lives in uniforms, so this changes the next frame without recompiling a
+   * shader. Throws with a list of everything wrong if the palette is not
+   * usable, rather than rendering half of it.
+   */
+  setPalette(palette: unknown): void;
+  /** What the surface currently is, for the overlay and for reports. */
+  surfaceName(): string;
   setHeightScale(scale: number): void;
   setSize(width: number, height: number, pixelRatio: number): void;
   /** Exposure value at ISO 100. Lower is brighter. */
@@ -120,6 +158,18 @@ export interface PlanetHarness {
    * every picture worth looking at does not.
    */
   setSunBehindCamera(): void;
+  /**
+   * Put the sun a given angle away from the camera's own line of sight.
+   *
+   * 0 is the sun directly behind the camera — a flat, fully lit disc. Past 60
+   * the terminator is in frame, which is where a planet renderer is actually
+   * judged; past 120 it is a crescent.
+   *
+   * Measured from where the camera *is*, not from an assumed position. A caller
+   * that hard-codes "the camera sits on +X" gets a night-side picture the
+   * moment the flight path changes, which is exactly what happened once.
+   */
+  setSunAtPhaseAngle(degrees: number, tiltDegrees?: number): void;
   /**
    * Negative control for the precision rules.
    *
@@ -156,7 +206,23 @@ function fatal(error: unknown): void {
 }
 
 async function boot(): Promise<void> {
-  const body = referenceBody();
+  // `?relief=<metres>` and `?surface=0|1`, so a caller can ask for the plain
+  // reference body without the explorer needing a mode switch at runtime.
+  const query = new URLSearchParams(window.location.search);
+  const reliefParam = Number(query.get('relief'));
+  const relief = Number.isFinite(reliefParam) && query.has('relief')
+    ? Math.max(0, reliefParam)
+    : DEFAULT_RELIEF_METRES;
+  const paletteUrl = query.get('palette');
+  const surfaceParam = Number(query.get('surface'));
+  const initialSurfaceMix =
+    Number.isFinite(surfaceParam) && query.has('surface') ? Math.min(1, Math.max(0, surfaceParam)) : 1;
+
+  const reference = referenceBody();
+  const body: Body =
+    relief > 0
+      ? Object.freeze({ ...reference, terrain: { ...reference.terrain, amplitude: relief } })
+      : reference;
 
   const renderer = await createPlanetRenderer({
     canvas,
@@ -190,7 +256,9 @@ async function boot(): Promise<void> {
 
   const planet = new Planet(body, {
     center: BODY_CENTRE,
-    material: { albedo: ALBEDO.earthMean },
+    // No `albedo`: the ground decides its own reflectance, place by place.
+    // Passing one would paint the whole body a single grey.
+    material: {},
     lod: { errorThresholdPixels: errorThreshold, buildBudgetPerFrame: budget },
     onBuildError: (error, key) => {
       console.error('tile build failed', key, error);
@@ -198,6 +266,20 @@ async function boot(): Promise<void> {
   });
   scene.add(planet.group);
   await planet.init();
+
+  // `?palette=<url>` loads an authored look before the first frame. A bad one
+  // is fatal on purpose: rendering half a palette and letting someone wonder
+  // which half is worse than not starting.
+  if (paletteUrl !== null) {
+    const response = await fetch(paletteUrl);
+    if (!response.ok) {
+      throw new Error(`palette ${paletteUrl}: HTTP ${response.status}`);
+    }
+    const parsed = parseSurfacePalette(await response.json());
+    if (!applyPalette(planet.materialHandle.surface, parsed)) {
+      throw new Error(`surface "${planet.materialHandle.surface.name}" has no palette to swap`);
+    }
+  }
 
   // Expose for the sunlit surface, the way a photographer would meter it.
   // Nothing measures the frame yet — that is the next piece — so this is the
@@ -210,8 +292,11 @@ async function boot(): Promise<void> {
   const flight = new Flight();
   const overlay = new Overlay(statsElement);
 
-  let heightScale = 0;
+  // The body carries its relief for real, so the scale starts at 1 and this is
+  // an exaggeration dial rather than an on switch.
+  let heightScale = 1;
   let lodDebug = 0;
+  let surfaceMix = initialSurfaceMix;
   let lastFrameMs = 0;
   let alongTrack = 0;
   let cameraPrecision: 'f64' | 'f32' = 'f64';
@@ -222,6 +307,7 @@ async function boot(): Promise<void> {
   const narrowing = new Float32Array(3);
 
   planet.materialHandle.setHeightScale(heightScale);
+  planet.materialHandle.setSurfaceMix(surfaceMix);
 
   function resize(): void {
     const width = window.innerWidth;
@@ -364,17 +450,17 @@ async function boot(): Promise<void> {
         lodDebug = lodDebug > 0 ? 0 : 1;
         planet.materialHandle.setLodDebug(lodDebug);
         break;
+      // The plain body, for comparison: one reflectance everywhere.
+      case 'g':
+      case 'G':
+        surfaceMix = surfaceMix > 0 ? 0 : 1;
+        planet.materialHandle.setSurfaceMix(surfaceMix);
+        break;
       case 'h':
       case 'H':
-        heightScale = heightScale > 0 ? 0 : 1;
-        planet.materialHandle.setBody({
-          ...body,
-          terrain: {
-            ...body.terrain,
-            amplitude: heightScale > 0 ? TERRAIN_PREVIEW_AMPLITUDE : 0,
-          },
-        });
-        planet.materialHandle.setHeightScale(1);
+        // Flat, true scale, or ten times over.
+        heightScale = heightScale === 0 ? 1 : heightScale === 1 ? 10 : 0;
+        planet.materialHandle.setHeightScale(heightScale);
         break;
       default:
         break;
@@ -420,6 +506,10 @@ async function boot(): Promise<void> {
     setTilt(tilt: number): void {
       flight.tilt = tilt;
     },
+    setLatitude(radians: number): void {
+      const limit = Math.PI / 2 - 1e-3;
+      flight.latitude = Math.min(limit, Math.max(-limit, radians));
+    },
     setFlightRunning(running: boolean): void {
       flight.running = running;
     },
@@ -434,14 +524,28 @@ async function boot(): Promise<void> {
       lodDebug = amount;
       planet.materialHandle.setLodDebug(amount);
     },
+    setSurfaceMix(amount: number): void {
+      surfaceMix = amount;
+      planet.materialHandle.setSurfaceMix(amount);
+    },
+    setPalette(next: unknown): void {
+      const parsed = parseSurfacePalette(next);
+      if (!applyPalette(planet.materialHandle.surface, parsed)) {
+        throw new Error(
+          `surface "${planet.materialHandle.surface.name}" has no palette to swap`,
+        );
+      }
+    },
+    surfaceName(): string {
+      return planet.materialHandle.surface.name;
+    },
     setHeightScale(scale: number): void {
-      // A real multiplier, not a switch: the acceptance jitter probe wants a
-      // little relief to look at, not the full twelve kilometres.
+      // Multiplies the body's own relief. 1 is true scale; the portrait's
+      // rotation series winds it up so that a smooth grey body has something
+      // to show. It only moves the vertices, not the tile bounds or the
+      // skirts, so anything much past a few times true scale will start to
+      // open seams at LOD boundaries.
       heightScale = scale;
-      planet.materialHandle.setBody({
-        ...body,
-        terrain: { ...body.terrain, amplitude: TERRAIN_PREVIEW_AMPLITUDE },
-      });
       planet.materialHandle.setHeightScale(scale);
     },
     setCameraPrecision(mode: 'f64' | 'f32'): void {
@@ -460,6 +564,22 @@ async function boot(): Promise<void> {
       const outward = camera.position.clone().sub(BODY_CENTRE).normalize();
       if (!outward.isFinite() || outward.lengthSq() < 0.5) return;
       sun.position.set(outward.x, outward.y, outward.z);
+    },
+    setSunAtPhaseAngle(degrees: number, tiltDegrees = 12): void {
+      const outward = camera.position.clone().sub(BODY_CENTRE).normalize();
+      if (!outward.isFinite() || outward.lengthSq() < 0.5) return;
+
+      // Two axes across the line of sight: one that swings the sun sideways
+      // (giving a terminator that runs roughly pole to pole) and one that
+      // raises it, so the light is not perfectly equatorial.
+      const east = new Vec3d(0, 1, 0).cross(outward);
+      if (east.lengthSq() < 1e-12) east.set(1, 0, 0);
+      east.normalize();
+      const north = outward.clone().cross(east).normalize();
+
+      let direction = rotateAbout(outward, north, (degrees * Math.PI) / 180);
+      direction = rotateAbout(direction, east, (tiltDegrees * Math.PI) / 180);
+      sun.position.set(direction.x, direction.y, direction.z);
     },
     meteredEv100(): number {
       return meteredEv100;
