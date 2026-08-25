@@ -90,7 +90,7 @@ async function measure(albedo: number, starlightLux = 0): Promise<Measurement> {
   await planet.init();
 
   const camera = new PlanetCamera({ fovY: (50 * Math.PI) / 180, aspect: 1 });
-  camera.placeAtAltitude(CENTRE, VIEW_DIRECTION, 3e7, EARTH.radius);
+  camera.placeAtAltitude(CENTRE, VIEW_DIRECTION, 3e7, EARTH, planet.pose);
   camera.update();
   planet.update(camera, SIZE, SIZE);
 

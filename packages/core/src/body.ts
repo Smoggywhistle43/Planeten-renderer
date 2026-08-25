@@ -10,12 +10,28 @@
 
 import { Pcg32, type Seed } from './hash.ts';
 import { surfaceSeed } from './seed.ts';
+import {
+  hydrostaticFlattening,
+  meanRadius as ellipsoidMeanRadius,
+  polarRadius as ellipsoidPolarRadius,
+  type Ellipsoid,
+} from './shape.ts';
+import type { Spinning } from './orientation.ts';
 
 /** Gravitational constant, m^3 kg^-1 s^-2 (CODATA 2018). */
 export const G = 6.6743e-11;
 
-export const EARTH_RADIUS = 6.371e6;
+/** IUGG mean radius, metres. The number everybody quotes. */
+export const EARTH_MEAN_RADIUS = 6.371e6;
+/** WGS 84 equatorial radius, metres. */
+export const EARTH_EQUATORIAL_RADIUS = 6_378_137;
+/** WGS 84 flattening. 21 km between the equator and the poles. */
+export const EARTH_FLATTENING = 1 / 298.257223563;
 export const EARTH_MASS = 5.9722e24;
+/** Sidereal day, seconds. */
+export const EARTH_ROTATION_PERIOD = 86_164.0905;
+/** Obliquity of the ecliptic, radians. 23.44 degrees. */
+export const EARTH_AXIAL_TILT = 0.409_092_6;
 
 /**
  * Coarse classification. It selects parameter ranges during generation; it does
@@ -51,7 +67,19 @@ export interface TerrainParams {
   readonly offset: readonly [number, number, number];
 }
 
-export interface Body {
+/**
+ * A body is data. No class, no methods, no inheritance hierarchy for planet
+ * types.
+ *
+ * It carries `equatorialRadius` and `flattening`, so it satisfies `Ellipsoid`
+ * and can be handed straight to anything in `shape.ts`. It carries the spin
+ * fields, so it satisfies `Spinning` and can be handed to `orientation.ts`.
+ * There is deliberately no single `radius`: a rotating body does not have one,
+ * and a field called `radius` invites every call site to quietly assume a
+ * sphere. Ask for `meanRadius(body)` or `surfaceRadius(body, direction)` and
+ * say which one is meant.
+ */
+export interface Body extends Ellipsoid, Spinning {
   /** Stable string id, derived from the seed. For cache keys and logging. */
   readonly id: string;
   /** The seed this body was generated from. */
@@ -59,14 +87,8 @@ export interface Body {
   /** Seed of the surface field, derived from `seed`. */
   readonly surfaceSeed: Seed;
   readonly class: BodyClass;
-  /** Mean radius, metres. */
-  readonly radius: number;
   /** Mass, kilograms. */
   readonly mass: number;
-  /** Sidereal rotation period, seconds. Negative means retrograde. */
-  readonly rotationPeriod: number;
-  /** Axial tilt, radians. */
-  readonly axialTilt: number;
   readonly terrain: TerrainParams;
 }
 
@@ -109,17 +131,27 @@ export function makeBody(seed: Seed, options: MakeBodyOptions = {}): Body {
   const bodyClass = options.bodyClass ?? (BODY_CLASSES[rng.nextInt(0, BODY_CLASSES.length - 1)] as BodyClass);
   const range = CLASS_RANGES[bodyClass];
 
-  const radius = rng.nextRange(range.radius[0], range.radius[1]);
+  const meanRadiusDraw = rng.nextRange(range.radius[0], range.radius[1]);
   const density = rng.nextRange(range.density[0], range.density[1]);
-  const volume = (4 / 3) * Math.PI * radius ** 3;
+  const volume = (4 / 3) * Math.PI * meanRadiusDraw ** 3;
   const mass = density * volume;
 
   const rotationPeriod = rng.nextRange(6 * 3600, 90 * 3600) * (rng.nextFloat() < 0.12 ? -1 : 1);
   const axialTilt = rng.nextRange(0, 0.6);
+  const axialTiltAzimuth = rng.nextRange(0, 2 * Math.PI);
+  const spinAtEpoch = rng.nextRange(0, 2 * Math.PI);
+
+  // The shape is not drawn — it follows from the rotation and the mass. A body
+  // that turns fast and is not very massive is visibly flattened, and that has
+  // to come out of the physics rather than out of a random number.
+  const flattening = hydrostaticFlattening(mass, meanRadiusDraw, rotationPeriod);
+  // The draw was a mean radius; solve back for the equatorial one so the mean
+  // stays where it was drawn. mean = (2a + a(1-f)) / 3 = a (3 - f) / 3.
+  const equatorialRadius = (meanRadiusDraw * 3) / (3 - flattening);
 
   const relief = rng.nextRange(range.reliefFraction[0], range.reliefFraction[1]);
   const terrain: TerrainParams = {
-    amplitude: radius * relief,
+    amplitude: meanRadiusDraw * relief,
     frequency: rng.nextRange(1.2, 3.4),
     octaves: rng.nextInt(4, 9),
     lacunarity: rng.nextRange(1.9, 2.3),
@@ -132,10 +164,13 @@ export function makeBody(seed: Seed, options: MakeBodyOptions = {}): Body {
     seed,
     surfaceSeed: surfaceSeed(seed),
     class: bodyClass,
-    radius,
+    equatorialRadius,
+    flattening,
     mass,
     rotationPeriod,
     axialTilt,
+    axialTiltAzimuth,
+    spinAtEpoch,
     terrain,
     ...options.overrides,
   };
@@ -157,10 +192,15 @@ export function referenceBody(seed: Seed = 1): Body {
     seed,
     surfaceSeed: surfaceSeed(seed),
     class: 'rocky' as const,
-    radius: EARTH_RADIUS,
+    // Measured, not derived: Earth's real flattening is 1/298, while the
+    // homogeneous prediction is 1/232. The difference is the core.
+    equatorialRadius: EARTH_EQUATORIAL_RADIUS,
+    flattening: EARTH_FLATTENING,
     mass: EARTH_MASS,
-    rotationPeriod: 86164.0905,
-    axialTilt: 0.40910518,
+    rotationPeriod: EARTH_ROTATION_PERIOD,
+    axialTilt: EARTH_AXIAL_TILT,
+    axialTiltAzimuth: 0,
+    spinAtEpoch: 0,
     terrain: Object.freeze({
       amplitude: 0,
       frequency: 2.0,
@@ -177,27 +217,43 @@ export function gravitationalParameter(body: Body): number {
   return G * body.mass;
 }
 
-/** Surface gravity at the mean radius, m s^-2. */
+/** Mean radius, metres. `(2a + b) / 3`. */
+export function meanRadius(body: Body): number {
+  return ellipsoidMeanRadius(body);
+}
+
+/** Polar radius, metres. */
+export function polarRadius(body: Body): number {
+  return ellipsoidPolarRadius(body);
+}
+
+/** Surface gravity at the mean radius, m s^-2. Ignores rotation. */
 export function surfaceGravity(body: Body): number {
-  return gravitationalParameter(body) / (body.radius * body.radius);
+  const r = meanRadius(body);
+  return gravitationalParameter(body) / (r * r);
 }
 
 /** Escape velocity at the mean radius, m s^-1. */
 export function escapeVelocity(body: Body): number {
-  return Math.sqrt((2 * gravitationalParameter(body)) / body.radius);
+  return Math.sqrt((2 * gravitationalParameter(body)) / meanRadius(body));
 }
 
 /** Mean density, kg m^-3. */
 export function meanDensity(body: Body): number {
-  return body.mass / ((4 / 3) * Math.PI * body.radius ** 3);
+  return body.mass / ((4 / 3) * Math.PI * meanRadius(body) ** 3);
 }
 
-/** Highest point the height field can reach, metres from the centre. */
+/**
+ * Largest distance from the centre to any point the height field can reach.
+ *
+ * The equator plus the full relief — the bound everything culling-related
+ * needs, and the one place a single number is the right answer.
+ */
 export function maxSurfaceRadius(body: Body): number {
-  return body.radius + body.terrain.amplitude;
+  return body.equatorialRadius + body.terrain.amplitude;
 }
 
-/** Lowest point the height field can reach, metres from the centre. */
+/** Smallest distance from the centre to any point the height field can reach. */
 export function minSurfaceRadius(body: Body): number {
-  return body.radius - body.terrain.amplitude;
+  return Math.max(0, polarRadius(body) - body.terrain.amplitude);
 }

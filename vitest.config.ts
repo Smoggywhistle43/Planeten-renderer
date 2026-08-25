@@ -1,4 +1,6 @@
 /// <reference types="@vitest/browser/providers/playwright" />
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 /**
@@ -13,14 +15,45 @@ import { defineConfig } from 'vitest/config';
  *
  * `pnpm test` runs both.
  *   PLANET_SKIP_GPU_TESTS=1   run the node project only.
- *   PLANET_CHROMIUM_PATH=...  use a Chromium that Playwright did not install.
+ *   PLANET_CHROMIUM_PATH=...  use a Chromium that Playwright did not install;
+ *                             a preinstalled one under PLAYWRIGHT_BROWSERS_PATH
+ *                             is found on its own.
  *
  * On a fresh machine the browser project needs `pnpm exec playwright install
  * chromium` once. On a machine without a hardware GPU the SwiftShader flags
  * below give Chromium a software WebGPU adapter — correct, just slow.
  */
+/**
+ * Where Chromium actually is.
+ *
+ * `PLANET_CHROMIUM_PATH` wins. Otherwise, if `PLAYWRIGHT_BROWSERS_PATH` points
+ * at a shared install, pick the newest `chromium-<build>` directory in it —
+ * Playwright looks for a build number matching the version it was compiled
+ * against and simply fails when a preinstalled browser carries a different one.
+ * Falling back to Playwright's own lookup keeps a normal `playwright install`
+ * working untouched.
+ */
+function findChromium() {
+  const explicit = process.env.PLANET_CHROMIUM_PATH;
+  if (explicit) return explicit;
+
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !existsSync(root)) return undefined;
+
+  const builds = readdirSync(root)
+    .filter((name) => /^chromium-\d+$/.test(name))
+    .map((name) => ({ name, build: Number(name.slice('chromium-'.length)) }))
+    .sort((a, b) => b.build - a.build);
+
+  for (const { name } of builds) {
+    const candidate = join(root, name, 'chrome-linux', 'chrome');
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
 const skipGpu = process.env['PLANET_SKIP_GPU_TESTS'] === '1';
-const chromiumPath = process.env['PLANET_CHROMIUM_PATH'];
+const chromiumPath = findChromium();
 /**
  * Chromium older than about 145 rejects the identity `swizzle` three r185 puts
  * on every texture view. Set this to run the GPU tests there anyway; see

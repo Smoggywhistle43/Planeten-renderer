@@ -5,7 +5,41 @@
  * headless in Node. `pnpm check:deps` enforces that; it is not a convention.
  */
 
-export { Vec3d, add, sub, scale, dot, cross, normalize, distance, tangentBasis } from './vec3d.ts';
+export {
+  Vec3d,
+  add,
+  sub,
+  scale,
+  dot,
+  cross,
+  normalize,
+  distance,
+  rotateAbout,
+  tangentBasis,
+} from './vec3d.ts';
+
+export {
+  altitudeAbove,
+  curvatureRadius,
+  equatorialCentrifugalRatio,
+  geodeticNormal,
+  hydrostaticFlattening,
+  meanRadius as ellipsoidMeanRadius,
+  polarRadius as ellipsoidPolarRadius,
+  sphere,
+  surfacePoint,
+  surfaceRadius,
+  verticalDeflection,
+  type Ellipsoid,
+} from './shape.ts';
+
+export {
+  BodyPose,
+  angularVelocity,
+  spinAngleAt,
+  surfaceVelocity,
+  type Spinning,
+} from './orientation.ts';
 
 export { Frame, float32PrecisionAt, type FrameOptions } from './frame.ts';
 
@@ -70,12 +104,18 @@ export {
   surfaceGravity,
   escapeVelocity,
   meanDensity,
+  meanRadius,
+  polarRadius,
   maxSurfaceRadius,
   minSurfaceRadius,
   BODY_CLASSES,
   G,
-  EARTH_RADIUS,
+  EARTH_AXIAL_TILT,
+  EARTH_EQUATORIAL_RADIUS,
+  EARTH_FLATTENING,
   EARTH_MASS,
+  EARTH_MEAN_RADIUS,
+  EARTH_ROTATION_PERIOD,
   type Body,
   type BodyClass,
   type TerrainParams,

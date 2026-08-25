@@ -31,7 +31,8 @@ const POINTS = fibonacciSphere(1000);
 const ROUGH: Body = makeBody(20250824, {
   bodyClass: 'rocky',
   overrides: {
-    radius: 6.371e6,
+    equatorialRadius: 6.371e6,
+    flattening: 0,
     terrain: {
       amplitude: 9000,
       frequency: 2.5,

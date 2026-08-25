@@ -223,6 +223,27 @@ export function distance(a: Vec3d, b: Vec3d): number {
 }
 
 /**
+ * Rotate `v` about a unit `axis` by `angle` radians. Rodrigues' formula.
+ *
+ * Used to build a rotating body's frame, so it runs in float64 and stays
+ * orthonormal to the last digit rather than drifting the way repeated
+ * incremental rotations do.
+ */
+export function rotateAbout(v: Vec3d, axis: Vec3d, angle: number, out: Vec3d = new Vec3d()): Vec3d {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const dot = axis.dot(v);
+  const cx = axis.y * v.z - axis.z * v.y;
+  const cy = axis.z * v.x - axis.x * v.z;
+  const cz = axis.x * v.y - axis.y * v.x;
+  return out.set(
+    v.x * c + cx * s + axis.x * dot * (1 - c),
+    v.y * c + cy * s + axis.y * dot * (1 - c),
+    v.z * c + cz * s + axis.z * dot * (1 - c),
+  );
+}
+
+/**
  * An orthonormal pair tangent to `n`, chosen without a branch on a
  * near-degenerate axis. Used for local surface frames.
  */

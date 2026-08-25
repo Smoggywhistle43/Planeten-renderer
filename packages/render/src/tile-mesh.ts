@@ -15,12 +15,13 @@
  * and is tested in Node.
  */
 
-import { Vec3d, type Body } from '@planet/core';
+import { Vec3d, geodeticNormal, surfaceRadius, type Body } from '@planet/core';
 import {
   faceUvToDirection,
   nodeArcLength,
   nodeCenterDirection,
   nodeGeometricError,
+  nodeSurfaceRadius,
   nodeUvBounds,
   type NodeKey,
 } from './cube-sphere.ts';
@@ -39,9 +40,9 @@ export interface TileMeshData {
   readonly key: NodeKey;
   /** Tile origin, body-centred world coordinates, float64. Never uploaded raw. */
   readonly origin: Vec3d;
-  /** Vertex minus origin, at the mean radius. float32, metres. */
+  /** Vertex minus origin, on the undisplaced surface. float32, metres. */
   readonly positions: Float32Array;
-  /** Unit direction per vertex. float32. Doubles as the undisplaced normal. */
+  /** Unit direction from the centre per vertex. float32. */
   readonly directions: Float32Array;
   /**
    * Per-vertex `(depth, angularStep)`, constant across the tile. The depth
@@ -49,7 +50,15 @@ export interface TileMeshData {
    * to place the finite-difference taps when it derives a surface normal.
    */
   readonly tileInfo: Float32Array;
-  /** Undisplaced normal per vertex — the same data as `directions`. float32. */
+  /**
+   * Undisplaced surface normal per vertex, float32.
+   *
+   * Not the same as `directions`. On a sphere they coincide; on a flattened
+   * body the ground is tilted relative to the line back to the centre, by up to
+   * 11.5 arcminutes on Earth and about a degree and a half on Saturn. Shading
+   * needs the perpendicular-to-the-ground one, or the terminator sits in the
+   * wrong place.
+   */
   readonly normals: Float32Array;
   readonly indices: Uint32Array;
   /** Largest |position|, metres. The tile's own bounding radius. */
@@ -83,11 +92,12 @@ export function buildTileMeshData(
   }
 
   const bounds = nodeUvBounds(key);
-  const origin = nodeCenterDirection(key).scale(body.radius);
+  const centreDirection = nodeCenterDirection(key);
+  const origin = centreDirection.clone().scale(surfaceRadius(body, centreDirection));
 
-  const arc = nodeArcLength(key, body.radius);
+  const arc = nodeArcLength(key, body);
   const cellArc = arc / n;
-  const angularStep = cellArc / body.radius;
+  const angularStep = cellArc / nodeSurfaceRadius(key, body);
 
   const skirtFactor = options.skirtFactor ?? DEFAULT_SKIRT_FACTOR;
   const skirtDepth = Math.max(
@@ -101,6 +111,7 @@ export function buildTileMeshData(
 
   const positions = new Float32Array(vertexCount * 3);
   const directions = new Float32Array(vertexCount * 3);
+  const normals = new Float32Array(vertexCount * 3);
   const tileInfo = new Float32Array(vertexCount * 2);
   for (let i = 0; i < vertexCount; i++) {
     tileInfo[i * 2] = key.depth;
@@ -108,6 +119,7 @@ export function buildTileMeshData(
   }
 
   const dir = new Vec3d();
+  const normal = new Vec3d();
   let localRadiusSq = 0;
 
   // ---- grid ---------------------------------------------------------------
@@ -119,15 +131,21 @@ export function buildTileMeshData(
 
       const idx = j * (n + 1) + i;
       // float64 throughout, narrowed once on assignment into the float32 view.
-      const px = dir.x * body.radius - origin.x;
-      const py = dir.y * body.radius - origin.y;
-      const pz = dir.z * body.radius - origin.z;
+      const r = surfaceRadius(body, dir);
+      const px = dir.x * r - origin.x;
+      const py = dir.y * r - origin.y;
+      const pz = dir.z * r - origin.z;
       positions[idx * 3] = px;
       positions[idx * 3 + 1] = py;
       positions[idx * 3 + 2] = pz;
       directions[idx * 3] = dir.x;
       directions[idx * 3 + 1] = dir.y;
       directions[idx * 3 + 2] = dir.z;
+
+      geodeticNormal(body, dir, normal);
+      normals[idx * 3] = normal.x;
+      normals[idx * 3 + 1] = normal.y;
+      normals[idx * 3 + 2] = normal.z;
 
       const rSq = px * px + py * py + pz * pz;
       if (rSq > localRadiusSq) localRadiusSq = rSq;
@@ -148,6 +166,9 @@ export function buildTileMeshData(
     directions[dst * 3] = dx;
     directions[dst * 3 + 1] = dy;
     directions[dst * 3 + 2] = dz;
+    normals[dst * 3] = normals[src * 3] as number;
+    normals[dst * 3 + 1] = normals[src * 3 + 1] as number;
+    normals[dst * 3 + 2] = normals[src * 3 + 2] as number;
   }
 
   // ---- indices ------------------------------------------------------------
@@ -191,7 +212,7 @@ export function buildTileMeshData(
     origin,
     positions,
     directions,
-    normals: directions,
+    normals,
     tileInfo,
     indices,
     localRadius: Math.sqrt(localRadiusSq) + skirtDepth,

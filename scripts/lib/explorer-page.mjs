@@ -7,7 +7,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -122,7 +122,7 @@ export async function openExplorer({ viewport, headless = true, log = console.lo
   const { server, port } = await serveDist();
   log(`serving ${DIST} on 127.0.0.1:${port}`);
 
-  const executablePath = process.env.PLANET_CHROMIUM_PATH;
+  const executablePath = findChromium();
   const browser = await chromium.launch({
     headless,
     args: CHROMIUM_ARGS,
@@ -176,3 +176,33 @@ export async function stepFrames(page, count, deltaSeconds = 0) {
     [count, deltaSeconds],
   );
 }
+
+/**
+ * Where Chromium actually is.
+ *
+ * `PLANET_CHROMIUM_PATH` wins. Otherwise, if `PLAYWRIGHT_BROWSERS_PATH` points
+ * at a shared install, pick the newest `chromium-<build>` directory in it —
+ * Playwright looks for a build number matching the version it was compiled
+ * against and simply fails when a preinstalled browser carries a different one.
+ * Falling back to Playwright's own lookup keeps a normal `playwright install`
+ * working untouched.
+ */
+export function findChromium() {
+  const explicit = process.env.PLANET_CHROMIUM_PATH;
+  if (explicit) return explicit;
+
+  const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+  if (!root || !existsSync(root)) return undefined;
+
+  const builds = readdirSync(root)
+    .filter((name) => /^chromium-\d+$/.test(name))
+    .map((name) => ({ name, build: Number(name.slice('chromium-'.length)) }))
+    .sort((a, b) => b.build - a.build);
+
+  for (const { name } of builds) {
+    const candidate = join(root, name, 'chrome-linux', 'chrome');
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+

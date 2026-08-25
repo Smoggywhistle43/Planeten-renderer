@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { Vec3d, referenceBody, makeBody } from '@planet/core';
+import {
+  Vec3d,
+  curvatureRadius,
+  ellipsoidMeanRadius,
+  ellipsoidPolarRadius,
+  makeBody,
+  referenceBody,
+  sphere,
+  surfaceRadius,
+} from '@planet/core';
 import {
   CUBE_FACES,
   assertValidKey,
@@ -13,6 +22,7 @@ import {
   nodeCornerDirections,
   nodeGeometricError,
   nodeId,
+  nodeSurfaceRadius,
   nodeUvBounds,
   distanceToPatch,
   parentKey,
@@ -26,6 +36,14 @@ import {
 } from '../src/cube-sphere.ts';
 
 const EARTH = referenceBody();
+/** Mean radius. The right stand-in wherever a single size is wanted. */
+const R = ellipsoidMeanRadius(EARTH);
+
+/** Put a point at a given height over the surface along `dir`. */
+function overSurface(dir: Vec3d, altitude: number): Vec3d {
+  const unit = dir.clone().normalize();
+  return unit.scale(surfaceRadius(EARTH, unit) + altitude);
+}
 
 /** Deterministic spread of directions, no RNG. */
 function sampleDirections(count: number): Vec3d[] {
@@ -65,8 +83,9 @@ describe('warp', () => {
 
   it('evens out cell sizes across a face', () => {
     // Compare the angular width of the centre cell with a corner cell at depth 3.
-    const centre = nodeArcLength({ face: 4, depth: 3, x: 4, y: 4 }, 1);
-    const corner = nodeArcLength({ face: 4, depth: 3, x: 0, y: 0 }, 1);
+    const unit = sphere(1);
+    const centre = nodeArcLength({ face: 4, depth: 3, x: 4, y: 4 }, unit);
+    const corner = nodeArcLength({ face: 4, depth: 3, x: 0, y: 0 }, unit);
     expect(corner / centre).toBeGreaterThan(0.7);
     expect(corner / centre).toBeLessThan(1.4);
   });
@@ -196,16 +215,16 @@ describe('node geometry', () => {
   it('measures a depth-0 face edge corner to corner', () => {
     // The edge runs between two cube corners, which subtend acos(1/3), not the
     // pi/2 the edge would span if it were measured through the face centre.
-    const arc = nodeArcLength({ face: 0, depth: 0, x: 0, y: 0 }, EARTH.radius);
-    expect(arc).toBeCloseTo(Math.acos(1 / 3) * EARTH.radius, -3);
-    expect(arc).toBeLessThan((Math.PI / 2) * EARTH.radius);
+    const arc = nodeArcLength({ face: 0, depth: 0, x: 0, y: 0 }, EARTH);
+    expect(arc).toBeCloseTo(Math.acos(1 / 3) * R, -4);
+    expect(arc).toBeLessThan((Math.PI / 2) * EARTH.equatorialRadius);
   });
 
   it('halves the arc with each depth level, exactly so once away from the corners', () => {
-    let previous = nodeArcLength({ face: 4, depth: 0, x: 0, y: 0 }, EARTH.radius);
+    let previous = nodeArcLength({ face: 4, depth: 0, x: 0, y: 0 }, EARTH);
     for (let depth = 1; depth <= 12; depth++) {
       const key: NodeKey = { face: 4, depth, x: 2 ** (depth - 1), y: 2 ** (depth - 1) };
-      const arc = nodeArcLength(key, EARTH.radius);
+      const arc = nodeArcLength(key, EARTH);
       const ratio = arc / previous;
       expect(ratio).toBeLessThan(1);
       // The first split still feels the corner-to-corner geometry; below that
@@ -224,14 +243,17 @@ describe('node geometry', () => {
       for (let j = 0; j <= 12; j++) {
         const u = b.u0 + ((b.u1 - b.u0) * i) / 12;
         const v = b.v0 + ((b.v1 - b.v0) * j) / 12;
-        const p = faceUvToDirection(key.face, u, v).scale(EARTH.radius);
+        const dir = faceUvToDirection(key.face, u, v);
+        const p = dir.clone().scale(surfaceRadius(EARTH, dir));
         expect(p.distanceTo(bounds.center)).toBeLessThanOrEqual(bounds.radius);
       }
     }
   });
 
   it('includes the terrain amplitude in the bounds', () => {
-    const rough = makeBody(7, { overrides: { radius: EARTH.radius } });
+    const rough = makeBody(7, {
+      overrides: { equatorialRadius: EARTH.equatorialRadius, flattening: EARTH.flattening },
+    });
     const key: NodeKey = { face: 0, depth: 6, x: 3, y: 4 };
     const flat = nodeBounds(key, EARTH).radius;
     const bumpy = nodeBounds(key, rough).radius;
@@ -269,11 +291,9 @@ describe('geometric error', () => {
 
   it('is a pure sphere sagitta when the body has no relief', () => {
     const key: NodeKey = { face: 0, depth: 8, x: 100, y: 100 };
-    const cell = nodeArcLength(key, EARTH.radius) / 32;
-    expect(nodeGeometricError(key, EARTH, 32)).toBeCloseTo(
-      (cell * cell) / (8 * EARTH.radius),
-      12,
-    );
+    const cell = nodeArcLength(key, EARTH) / 32;
+    const bend = curvatureRadius(EARTH, nodeCenterDirection(key));
+    expect(nodeGeometricError(key, EARTH, 32)).toBeCloseTo((cell * cell) / (8 * bend), 12);
   });
 
   it('reports no unresolved relief for a flat body, and some for a rough one', () => {
@@ -302,9 +322,9 @@ describe('distanceToPatch', () => {
         Math.sin(0.34),
         Math.cos(0.34) * Math.sin(0.75),
       ).normalize();
-      const camera = dir.clone().scale(EARTH.radius + altitude);
+      const camera = overSurface(dir, altitude);
       const bounds = nodeBounds(key, EARTH);
-      expect(distanceToPatch(bounds, EARTH.radius, camera)).toBeCloseTo(altitude, 3);
+      expect(distanceToPatch(bounds, EARTH, camera)).toBeCloseTo(altitude, 3);
     }
   });
 
@@ -312,39 +332,39 @@ describe('distanceToPatch', () => {
     const key: NodeKey = { face: 4, depth: 3, x: 3, y: 5 };
     const bounds = nodeBounds(key, EARTH);
     const centre = nodeCenterDirection(key);
-    const camera = centre.clone().scale(EARTH.radius + 500);
-    expect(distanceToPatch(bounds, EARTH.radius, camera)).toBeCloseTo(500, 3);
+    const camera = overSurface(centre, 500);
+    expect(distanceToPatch(bounds, EARTH, camera)).toBeCloseTo(500, 3);
   });
 
   it('grows once the camera leaves the patch', () => {
     const key: NodeKey = { face: 4, depth: 5, x: 16, y: 16 };
     const bounds = nodeBounds(key, EARTH);
     const centre = nodeCenterDirection(key);
-    const over = distanceToPatch(bounds, EARTH.radius, centre.clone().scale(EARTH.radius + 1000));
+    const over = distanceToPatch(bounds, EARTH, overSurface(centre, 1000));
 
     // Slide a quarter of a face away: the closest point is now an edge.
-    const far = faceUvToDirection(4, 0.9, 0.9).scale(EARTH.radius + 1000);
-    expect(distanceToPatch(bounds, EARTH.radius, far)).toBeGreaterThan(over * 10);
+    const far = overSurface(faceUvToDirection(4, 0.9, 0.9), 1000);
+    expect(distanceToPatch(bounds, EARTH, far)).toBeGreaterThan(over * 10);
   });
 
   it('never exceeds the distance to the nearest sampled point', () => {
     const key: NodeKey = { face: 2, depth: 2, x: 1, y: 2 };
     const bounds = nodeBounds(key, EARTH);
     for (const dir of sampleDirections(400)) {
-      const camera = dir.clone().scale(EARTH.radius + 2e4);
+      const camera = overSurface(dir, 2e4);
       let sampled = Number.POSITIVE_INFINITY;
       for (const s of bounds.samples) sampled = Math.min(sampled, s.distanceTo(camera));
-      expect(distanceToPatch(bounds, EARTH.radius, camera)).toBeLessThanOrEqual(sampled + 1e-6);
+      expect(distanceToPatch(bounds, EARTH, camera)).toBeLessThanOrEqual(sampled + 1e-6);
     }
   });
 
   it('stays finite on the far side of the body', () => {
     const key: NodeKey = { face: 0, depth: 0, x: 0, y: 0 };
     const bounds = nodeBounds(key, EARTH);
-    const behind = new Vec3d(-(EARTH.radius + 1000), 0, 0);
-    const d = distanceToPatch(bounds, EARTH.radius, behind);
+    const behind = new Vec3d(-(EARTH.equatorialRadius + 1000), 0, 0);
+    const d = distanceToPatch(bounds, EARTH, behind);
     expect(Number.isFinite(d)).toBe(true);
-    expect(d).toBeGreaterThan(EARTH.radius);
+    expect(d).toBeGreaterThan(R);
   });
 
   it('carries the face and the warped parameter range', () => {
@@ -356,5 +376,91 @@ describe('distanceToPatch', () => {
     expect(bounds.s1).toBeCloseTo(warp(b.u1 * 2 - 1), 12);
     expect(bounds.t0).toBeCloseTo(warp(b.v0 * 2 - 1), 12);
     expect(bounds.t1).toBeCloseTo(warp(b.v1 * 2 - 1), 12);
+  });
+});
+
+describe('the quadtree on a body that is not round', () => {
+  /**
+   * The trap this stage removes. Every one of these assertions fails against a
+   * quadtree that scales directions by a single radius: over Earth's pole that
+   * puts the surface 21 km too high, so the camera reads as being 21 km
+   * *underground* and the LOD error goes to its ceiling. Silent, again — the
+   * tiles just come out at the wrong depth near the poles.
+   */
+  it('puts the patch on the surface at the pole, not on a sphere', () => {
+    const pole: NodeKey = { face: 2, depth: 0, x: 0, y: 0 };
+    const bounds = nodeBounds(pole, EARTH);
+    expect(bounds.center.length()).toBeCloseTo(ellipsoidPolarRadius(EARTH), 6);
+    expect(bounds.center.length()).toBeLessThan(EARTH.equatorialRadius - 21_000);
+  });
+
+  it('puts the patch on the surface at the equator too', () => {
+    const equator: NodeKey = { face: 0, depth: 0, x: 0, y: 0 };
+    const bounds = nodeBounds(equator, EARTH);
+    expect(bounds.center.length()).toBeCloseTo(EARTH.equatorialRadius, 6);
+  });
+
+  it('measures the altitude correctly over the pole', () => {
+    const pole: NodeKey = { face: 2, depth: 4, x: 8, y: 8 };
+    const bounds = nodeBounds(pole, EARTH);
+    for (const altitude of [1e6, 1e4, 100]) {
+      const camera = overSurface(nodeCenterDirection(pole), altitude);
+      expect(distanceToPatch(bounds, EARTH, camera)).toBeCloseTo(altitude, 3);
+    }
+  });
+
+  it('measures the altitude correctly at every latitude', () => {
+    for (const face of [0, 1, 2, 3, 4, 5] as FaceIndex[]) {
+      const key: NodeKey = { face, depth: 3, x: 3, y: 5 };
+      const bounds = nodeBounds(key, EARTH);
+      const camera = overSurface(nodeCenterDirection(key), 5000);
+      expect(distanceToPatch(bounds, EARTH, camera)).toBeCloseTo(5000, 3);
+    }
+  });
+
+  it('gives a pole tile a shorter reach from the centre than an equator tile', () => {
+    // Small nodes, so the whole patch really is polar or really is equatorial.
+    const pole = nodeSurfaceRadius({ face: 2, depth: 5, x: 16, y: 16 }, EARTH);
+    const equator = nodeSurfaceRadius({ face: 0, depth: 5, x: 16, y: 16 }, EARTH);
+    // Within about 50 m of the exact value: a depth-5 tile still spans nearly
+    // three degrees of latitude, and this is its average over that span.
+    expect(Math.abs(pole - ellipsoidPolarRadius(EARTH))).toBeLessThan(100);
+    expect(Math.abs(equator - EARTH.equatorialRadius)).toBeLessThan(100);
+    expect(equator - pole).toBeGreaterThan(21_000);
+  });
+
+  it('tells the six depth-0 faces apart, which the corners alone cannot', () => {
+    // All six share the same eight cube corners. Only the centre distinguishes
+    // the face over the pole from the face over the equator.
+    const pole = nodeSurfaceRadius({ face: 2, depth: 0, x: 0, y: 0 }, EARTH);
+    const equator = nodeSurfaceRadius({ face: 0, depth: 0, x: 0, y: 0 }, EARTH);
+    expect(pole).toBeLessThan(equator);
+  });
+
+  it('collapses to the old behaviour exactly when the body is round', () => {
+    // The sphere case must not have moved by a single float.
+    const round = sphere(R);
+    for (const key of [
+      { face: 0, depth: 0, x: 0, y: 0 } as NodeKey,
+      { face: 2, depth: 5, x: 11, y: 3 } as NodeKey,
+      { face: 5, depth: 9, x: 300, y: 7 } as NodeKey,
+    ]) {
+      expect(nodeSurfaceRadius(key, round)).toBe(R);
+      expect(nodeArcLength(key, round)).toBeCloseTo(
+        nodeArcLength(key, sphere(1)) * R,
+        6,
+      );
+      const bounds = nodeBounds(key, { ...EARTH, ...round, terrain: EARTH.terrain });
+      expect(bounds.center.length()).toBeCloseTo(R, 6);
+    }
+  });
+
+  it('splits a little deeper along the equator, where the ground bends hardest', () => {
+    // Same tile size, more curvature, more error. On Earth the difference is
+    // under a percent; the point is that it exists and has the right sign.
+    const equator = nodeGeometricError({ face: 0, depth: 6, x: 32, y: 32 }, EARTH, 32);
+    const pole = nodeGeometricError({ face: 2, depth: 6, x: 32, y: 32 }, EARTH, 32);
+    expect(equator).toBeGreaterThan(pole);
+    expect(equator / pole).toBeLessThan(1.05);
   });
 });

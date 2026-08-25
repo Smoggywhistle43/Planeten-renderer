@@ -1,9 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { Vec3d, float32PrecisionAt, makeBody, referenceBody } from '@planet/core';
+import {
+  Vec3d,
+  curvatureRadius,
+  ellipsoidMeanRadius,
+  ellipsoidPolarRadius,
+  float32PrecisionAt,
+  geodeticNormal,
+  makeBody,
+  referenceBody,
+  surfaceRadius,
+} from '@planet/core';
 import { buildTileMeshData, perimeterIndices } from '../src/tile-mesh.ts';
-import { nodeArcLength, type NodeKey } from '../src/cube-sphere.ts';
+import {
+  nodeArcLength,
+  nodeCenterDirection,
+  nodeSurfaceRadius,
+  type NodeKey,
+} from '../src/cube-sphere.ts';
 
 const EARTH = referenceBody();
+const R = ellipsoidMeanRadius(EARTH);
 const N = 16;
 
 function build(key: NodeKey, gridResolution = N) {
@@ -80,7 +96,7 @@ describe('buildTileMeshData', () => {
   it('carries the node depth and the vertex spacing on every vertex', () => {
     const key: NodeKey = { face: 1, depth: 6, x: 33, y: 12 };
     const tile = build(key);
-    const expectedStep = nodeArcLength(key, EARTH.radius) / N / EARTH.radius;
+    const expectedStep = nodeArcLength(key, EARTH) / N / nodeSurfaceRadius(key, EARTH);
     for (let i = 0; i < tile.vertexCount; i++) {
       expect(tile.tileInfo[i * 2]).toBe(key.depth);
       // Stored as float32, so compare at float32 resolution, not float64.
@@ -90,12 +106,17 @@ describe('buildTileMeshData', () => {
   });
 
   describe('precision rule 2: vertices are relative to the tile origin', () => {
-    it('puts every grid vertex back on the sphere when the origin is added', () => {
+    it('puts every grid vertex back on the surface when the origin is added', () => {
       const tile = build({ face: 5, depth: 7, x: 40, y: 91 });
       const gridCount = (N + 1) * (N + 1);
       for (let i = 0; i < gridCount; i++) {
         const world = vertexAt(tile.positions, i).add(tile.origin);
-        expect(world.length()).toBeCloseTo(EARTH.radius, 1);
+        // Re-normalised: the attribute is float32, and a length that is off by
+        // one part in 1e7 moves the expected radius by half a metre.
+        const dir = vertexAt(tile.directions, i).normalize();
+        // Not "on a sphere of radius R" any more — on the ellipsoid, which is a
+        // different distance from the centre at every one of these vertices.
+        expect(world.length()).toBeCloseTo(surfaceRadius(EARTH, dir), 1);
       }
     });
 
@@ -107,7 +128,7 @@ describe('buildTileMeshData', () => {
       expect(tile.localRadius).toBeLessThan(100);
 
       const resolutionHere = float32PrecisionAt(tile.localRadius);
-      const resolutionIfAbsolute = float32PrecisionAt(EARTH.radius);
+      const resolutionIfAbsolute = float32PrecisionAt(R);
       expect(resolutionHere).toBeLessThan(1e-4);
       expect(resolutionIfAbsolute / resolutionHere).toBeGreaterThan(1000);
     });
@@ -123,9 +144,12 @@ describe('buildTileMeshData', () => {
       expect(previous).toBeLessThan(500);
     });
 
-    it('places the origin on the node centre, at the mean radius', () => {
-      const tile = build({ face: 3, depth: 5, x: 9, y: 20 });
-      expect(tile.origin.length()).toBeCloseTo(EARTH.radius, 6);
+    it('places the origin on the node centre, on the surface', () => {
+      const key: NodeKey = { face: 3, depth: 5, x: 9, y: 20 };
+      const tile = build(key);
+      const centre = nodeCenterDirection(key);
+      expect(tile.origin.length()).toBeCloseTo(surfaceRadius(EARTH, centre), 6);
+      expect(tile.origin.clone().normalize().distanceTo(centre)).toBeLessThan(1e-12);
     });
   });
 
@@ -171,11 +195,10 @@ describe('buildTileMeshData', () => {
       // most the coarser tile's geometric error.
       const key: NodeKey = { face: 4, depth: 8, x: 128, y: 128 };
       const tile = build(key);
+      const parentKey: NodeKey = { ...key, depth: key.depth - 1, x: key.x >> 1, y: key.y >> 1 };
       const parentError =
-        (nodeArcLength({ ...key, depth: key.depth - 1, x: key.x >> 1, y: key.y >> 1 }, EARTH.radius) /
-          N) **
-          2 /
-        (8 * EARTH.radius);
+        (nodeArcLength(parentKey, EARTH) / N) ** 2 /
+        (8 * curvatureRadius(EARTH, nodeCenterDirection(parentKey)));
       expect(tile.skirtDepth).toBeGreaterThan(parentError);
     });
 
@@ -196,5 +219,70 @@ describe('buildTileMeshData', () => {
     // has to account for relief the grid cannot represent.
     expect(bumpy.skirtDepth).toBeGreaterThan(flat.skirtDepth * 0.5);
     expect(Number.isFinite(bumpy.localRadius)).toBe(true);
+  });
+});
+
+describe('the tile on a body that is not round', () => {
+  it('carries a normal that is not the direction from the centre', () => {
+    // The whole reason `normals` stopped being an alias for `directions`.
+    // Somewhere in a mid-latitude tile the two must actually differ.
+    const tile = build({ face: 4, depth: 2, x: 1, y: 3 });
+    let maxArcminutes = 0;
+    for (let i = 0; i < tile.vertexCount; i++) {
+      const dir = vertexAt(tile.directions, i).normalize();
+      const normal = vertexAt(tile.normals, i).normalize();
+      const angle = Math.acos(Math.min(1, normal.dot(dir)));
+      maxArcminutes = Math.max(maxArcminutes, (angle * 180 * 60) / Math.PI);
+    }
+    expect(maxArcminutes).toBeGreaterThan(5);
+    expect(maxArcminutes).toBeLessThan(12);
+  });
+
+  it('agrees with the geodetic normal at every vertex', () => {
+    const tile = build({ face: 0, depth: 3, x: 2, y: 5 });
+    for (let i = 0; i < tile.vertexCount; i++) {
+      const dir = vertexAt(tile.directions, i).normalize();
+      const normal = vertexAt(tile.normals, i);
+      expect(normal.distanceTo(geodeticNormal(EARTH, dir))).toBeLessThan(1e-6);
+    }
+  });
+
+  it('still hands back a unit normal', () => {
+    const tile = build({ face: 2, depth: 4, x: 7, y: 7 });
+    for (let i = 0; i < tile.vertexCount; i++) {
+      expect(vertexAt(tile.normals, i).length()).toBeCloseTo(1, 6);
+    }
+  });
+
+  it('has normal and direction coincide on a round body', () => {
+    const round = makeBody(3, { overrides: { flattening: 0 } });
+    const tile = buildTileMeshData({ face: 4, depth: 2, x: 1, y: 3 }, round, {
+      gridResolution: N,
+    });
+    for (let i = 0; i < tile.vertexCount; i++) {
+      const dir = vertexAt(tile.directions, i);
+      expect(vertexAt(tile.normals, i).distanceTo(dir)).toBeLessThan(1e-7);
+    }
+  });
+
+  it('builds a polar tile 21 km closer to the centre than an equatorial one', () => {
+    const pole = build({ face: 2, depth: 5, x: 16, y: 16 });
+    const equator = build({ face: 0, depth: 5, x: 16, y: 16 });
+    expect(equator.origin.length() - pole.origin.length()).toBeGreaterThan(21_000);
+    // Not exactly the polar radius: this tile's centre sits about a degree and
+    // a half off the pole, which is 26 m further out.
+    expect(Math.abs(pole.origin.length() - ellipsoidPolarRadius(EARTH))).toBeLessThan(100);
+  });
+
+  it('gives the skirt on a polar tile the same job as on an equatorial one', () => {
+    // Both have to out-reach their own geometric error; neither may collapse.
+    for (const key of [
+      { face: 2, depth: 6, x: 32, y: 32 } as NodeKey,
+      { face: 0, depth: 6, x: 32, y: 32 } as NodeKey,
+    ]) {
+      const tile = build(key);
+      expect(tile.skirtDepth).toBeGreaterThan(0);
+      expect(tile.skirtDepth).toBeLessThan(nodeArcLength(key, EARTH));
+    }
   });
 });

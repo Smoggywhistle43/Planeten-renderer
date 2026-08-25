@@ -52,6 +52,8 @@ const STARLIGHT_ILLUMINANCE = 0.002;
 
 interface HarnessStats extends PlanetStats {
   altitude: number;
+  /** Distance from the body's centre, metres. Not altitude plus one radius. */
+  distanceFromCentre: number;
   frameMs: number;
   progress: number;
   peakBuildsPerFrame: number;
@@ -85,6 +87,15 @@ export interface PlanetHarness {
   nudgeAlong(metres: number): void;
   setTilt(tilt: number): void;
   setFlightRunning(running: boolean): void;
+  /**
+   * Put the body where it is at `seconds` past the epoch.
+   *
+   * The picture depends on the absolute time, not on how many frames have been
+   * drawn, so the same second always gives the same planet.
+   */
+  setTime(seconds: number): void;
+  /** How many simulated seconds pass per real second. 1 is real time. */
+  setTimeScale(scale: number): void;
   setLodDebug(amount: number): void;
   setHeightScale(scale: number): void;
   setSize(width: number, height: number, pixelRatio: number): void;
@@ -99,6 +110,16 @@ export interface PlanetHarness {
    * gives a terminator, which is where a planet renderer is actually judged.
    */
   setSunDirection(x: number, y: number, z: number): void;
+  /**
+   * Put the sun directly behind the camera, so the whole disc is lit.
+   *
+   * The least interesting picture a planet renderer can make, and exactly the
+   * right one for measuring geometry: with a terminator in frame, "how many
+   * pixels are lit" stops being "how big is the body", and the unlit half reads
+   * as a hole between tiles. Every shape and crack measurement wants this;
+   * every picture worth looking at does not.
+   */
+  setSunBehindCamera(): void;
   /**
    * Negative control for the precision rules.
    *
@@ -194,6 +215,10 @@ async function boot(): Promise<void> {
   let lastFrameMs = 0;
   let alongTrack = 0;
   let cameraPrecision: 'f64' | 'f32' = 'f64';
+  let simSeconds = 0;
+  // Real time by default. Earth turns 15 degrees an hour, so nothing visibly
+  // moves at 1x — the `,` and `.` keys wind the clock forward faster.
+  let timeScale = 1;
   const narrowing = new Float32Array(3);
 
   planet.materialHandle.setHeightScale(heightScale);
@@ -216,8 +241,11 @@ async function boot(): Promise<void> {
   function frame(deltaSeconds: number): void {
     const started = performance.now();
 
+    simSeconds += deltaSeconds * timeScale;
+    planet.setTime(simSeconds);
+
     flight.advance(deltaSeconds);
-    flight.applyTo(camera, BODY_CENTRE, body.radius);
+    flight.applyTo(camera, BODY_CENTRE, body, planet.pose);
     if (alongTrack !== 0) {
       // A pure translation along the surface, applied in float64 after the
       // scripted placement. This is what the jitter probe walks the camera with.
@@ -248,11 +276,14 @@ async function boot(): Promise<void> {
       depth,
       budget,
       errorThreshold,
-      altitude: camera.altitudeAbove(BODY_CENTRE, body.radius),
+      altitude: camera.altitudeAbove(BODY_CENTRE, body, planet.pose),
       frameMs: lastFrameMs,
       pixelRatio: renderer.getPixelRatio(),
       drawingBufferHeight: buffer.height,
       flightRunning: flight.running,
+      simSeconds,
+      timeScale,
+      spinAngle: planet.pose.spinAngle,
       heightScale,
       ev100: post.ev100,
       exposure: post.exposure,
@@ -302,6 +333,20 @@ async function boot(): Promise<void> {
       case 't':
       case 'T':
         flight.tilt = flight.tilt > 0 ? 0 : 0.85;
+        break;
+      // Wind the clock. At 1x Earth turns 15 degrees an hour; at 3600x a day
+      // takes 24 seconds, which is where the rotation becomes something you can
+      // watch rather than something you have to take on trust.
+      case ',':
+        timeScale = Math.max(1, timeScale / 10);
+        break;
+      case '.':
+        timeScale = Math.min(1e6, timeScale * 10);
+        break;
+      case ';':
+        simSeconds = 0;
+        timeScale = 1;
+        planet.setTime(0);
         break;
       // One stop darker / brighter, the way an exposure compensation dial works.
       case '-':
@@ -378,6 +423,13 @@ async function boot(): Promise<void> {
     setFlightRunning(running: boolean): void {
       flight.running = running;
     },
+    setTime(seconds: number): void {
+      simSeconds = seconds;
+      planet.setTime(seconds);
+    },
+    setTimeScale(scale: number): void {
+      timeScale = scale;
+    },
     setLodDebug(amount: number): void {
       lodDebug = amount;
       planet.materialHandle.setLodDebug(amount);
@@ -401,6 +453,14 @@ async function boot(): Promise<void> {
     setSunDirection(x: number, y: number, z: number): void {
       sun.position.set(x, y, z).normalize();
     },
+    setSunBehindCamera(): void {
+      // three reads a directional light's `position` as the direction the light
+      // comes *from*, so pointing it along the camera's outward radial lights
+      // the face the camera is looking at.
+      const outward = camera.position.clone().sub(BODY_CENTRE).normalize();
+      if (!outward.isFinite() || outward.lengthSq() < 0.5) return;
+      sun.position.set(outward.x, outward.y, outward.z);
+    },
     meteredEv100(): number {
       return meteredEv100;
     },
@@ -415,7 +475,8 @@ async function boot(): Promise<void> {
       const buffer = drawingBuffer();
       return {
         ...planet.stats,
-        altitude: camera.altitudeAbove(BODY_CENTRE, body.radius),
+        altitude: camera.altitudeAbove(BODY_CENTRE, body, planet.pose),
+        distanceFromCentre: camera.distanceFromCentre(BODY_CENTRE),
         frameMs: lastFrameMs,
         progress: flight.progress,
         peakBuildsPerFrame: overlay.peakBuildsPerFrame,

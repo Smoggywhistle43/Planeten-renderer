@@ -2,10 +2,10 @@
  * The tile material. All shading is TSL — no GLSL, no `ShaderMaterial`, no
  * `onBeforeCompile`.
  *
- * One material serves every tile. That works because a tile's position on the
- * planet is carried by its object matrix (a pure camera-relative translation,
- * see `Planet.update`) rather than by a per-tile uniform, so the node graph is
- * identical for all of them and compiles once.
+ * One material serves every tile. That works because a tile's place on the
+ * planet is carried by its object matrix — the body's rotation, then a
+ * camera-relative translation, see `Planet.update` — rather than by a per-tile
+ * uniform, so the node graph is identical for all of them and compiles once.
  *
  * The vertex stage does two things:
  *   - displaces along the vertex direction by the height field, and
@@ -19,6 +19,7 @@ import {
   attribute,
   materialColor,
   mix,
+  normalLocal,
   positionLocal,
   transformNormalToView,
   uniform,
@@ -95,11 +96,19 @@ export function createPlanetMaterial(
   // range. No absolute world coordinate appears anywhere in this expression.
   material.positionNode = positionLocal.add(direction.mul(displacement));
 
-  // `normalNode` is view space. The object matrix is a pure translation, so the
-  // world-axis normal from the field is also the object-space normal, and only
-  // the camera rotation has to be applied.
+  // Everything in the vertex stage is body-fixed: the tile grid, the direction
+  // the height field is sampled along, and the `normal` attribute, which holds
+  // which way the undisplaced ground faces. On a flattened body that is not the
+  // same as the direction from the centre, so it is carried as its own
+  // attribute rather than reconstructed.
+  //
+  // `normalNode` wants view space. The object matrix now carries the body's
+  // rotation as well as the camera-relative translation, so handing the
+  // body-fixed normal to `transformNormalToView` applies the body's turn and
+  // the camera's orientation in one step — which is what makes the terrain turn
+  // with the planet instead of sliding across it.
   material.normalNode = transformNormalToView(
-    surfaceNormalNode(direction, heightUniforms, angularStep),
+    surfaceNormalNode(direction, normalLocal as Node<'vec3'>, heightUniforms, angularStep),
   );
 
   // Debug colouring rides a uniform rather than a second shader, so toggling it

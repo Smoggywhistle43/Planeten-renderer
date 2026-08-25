@@ -1,9 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { Vec3d, referenceBody } from '@planet/core';
+import { BodyPose, Vec3d, referenceBody, surfaceRadius } from '@planet/core';
 import { Vector3 } from 'three/webgpu';
 import { PlanetCamera } from '../src/planet-camera.ts';
 
 const EARTH = referenceBody();
+/**
+ * The reference body with its axis upright, so these tests are about the camera
+ * rather than about Earth's tilt. `BodyPose` starts as the identity.
+ */
+const UPRIGHT = new BodyPose();
+
+/** Distance from the centre to the surface at the equator. */
+const EQUATOR = surfaceRadius(EARTH, new Vec3d(1, 0, 0));
 const CENTRE = new Vec3d(0, 0, 0);
 
 describe('PlanetCamera', () => {
@@ -12,7 +20,7 @@ describe('PlanetCamera', () => {
       const camera = new PlanetCamera();
       for (const p of [
         new Vec3d(0, 0, 0),
-        new Vec3d(EARTH.radius + 1000, 0, 0),
+        new Vec3d(EQUATOR + 1000, 0, 0),
         new Vec3d(1e9, -4e8, 7e8),
         new Vec3d(1e12, 1e12, 1e12),
       ]) {
@@ -122,16 +130,18 @@ describe('PlanetCamera', () => {
     it('lands on the requested altitude exactly', () => {
       const camera = new PlanetCamera();
       for (const altitude of [1e9, 1e6, 1e3, 1, 0]) {
-        camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), altitude, EARTH.radius);
-        expect(camera.altitudeAbove(CENTRE, EARTH.radius)).toBeCloseTo(altitude, 6);
+        camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), altitude, EARTH, UPRIGHT);
+        expect(camera.altitudeAbove(CENTRE, EARTH, UPRIGHT)).toBeCloseTo(altitude, 6);
         expect(camera.forward().x).toBeCloseTo(-1, 9);
       }
     });
 
     it('normalises whatever direction it is handed', () => {
       const camera = new PlanetCamera();
-      camera.placeAtAltitude(CENTRE, new Vec3d(3, 4, 0), 1000, EARTH.radius);
-      expect(camera.distanceFromCentre(CENTRE)).toBeCloseTo(EARTH.radius + 1000, 6);
+      const direction = new Vec3d(3, 4, 0);
+      camera.placeAtAltitude(CENTRE, direction, 1000, EARTH, UPRIGHT);
+      const expected = surfaceRadius(EARTH, direction.clone().normalize()) + 1000;
+      expect(camera.distanceFromCentre(CENTRE)).toBeCloseTo(expected, 6);
     });
   });
 
@@ -177,12 +187,68 @@ describe('PlanetCamera', () => {
       const camera = new PlanetCamera({ rebaseThreshold: 4096 });
       for (let i = 0; i <= 2000; i++) {
         const altitude = 1e9 * (1e3 / 1e9) ** (i / 2000);
-        camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), altitude, EARTH.radius);
+        camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), altitude, EARTH, UPRIGHT);
         camera.update();
         expect(camera.frame.toFrame(camera.position).length()).toBeLessThanOrEqual(4096);
       }
       expect(camera.frame.rebaseCount).toBeGreaterThan(0);
       expect(camera.frame.rebaseCount).toBeLessThanOrEqual(2001);
     });
+  });
+});
+
+describe('altitude over a tilted body', () => {
+  /**
+   * The trap that cost a debugging session. `placeAtAltitude` and
+   * `altitudeAbove` need the body's pose because the ground is a different
+   * distance from the centre at every latitude — and which latitude a world
+   * direction points at depends on how the axis is tilted.
+   *
+   * With Earth's 23.4 degrees, taking the world direction for the body-fixed
+   * one puts a "1 km" camera kilometres off, and nothing complains. Making the
+   * pose a required argument is what stops that; these tests pin the size of
+   * what it prevents.
+   */
+  const TILTED = new BodyPose().update(EARTH, 0);
+  const DIRECTION = new Vec3d(0.69, 0.33, 0.64);
+
+  it('lands on the requested altitude with the pose', () => {
+    const camera = new PlanetCamera();
+    for (const altitude of [1e6, 1e3, 0]) {
+      camera.placeAtAltitude(CENTRE, DIRECTION, altitude, EARTH, TILTED);
+      expect(camera.altitudeAbove(CENTRE, EARTH, TILTED)).toBeCloseTo(altitude, 6);
+    }
+  });
+
+  it('is kilometres out if the tilt is ignored', () => {
+    const camera = new PlanetCamera();
+    camera.placeAtAltitude(CENTRE, DIRECTION, 1000, EARTH, TILTED);
+    const withTilt = camera.distanceFromCentre(CENTRE);
+
+    const upright = new PlanetCamera();
+    upright.placeAtAltitude(CENTRE, DIRECTION, 1000, EARTH, UPRIGHT);
+    const withoutTilt = upright.distanceFromCentre(CENTRE);
+
+    expect(Math.abs(withTilt - withoutTilt)).toBeGreaterThan(1000);
+  });
+
+  it('does not care how far the body has spun', () => {
+    // An ellipsoid looks the same from every longitude, so the time of day must
+    // not move the ground.
+    const camera = new PlanetCamera();
+    const heights: number[] = [];
+    for (const seconds of [0, 21_541, 43_082, 64_623]) {
+      const pose = new BodyPose().update(EARTH, seconds);
+      camera.placeAtAltitude(CENTRE, DIRECTION, 1000, EARTH, pose);
+      heights.push(camera.distanceFromCentre(CENTRE));
+    }
+    for (const h of heights) expect(h).toBeCloseTo(heights[0] as number, 6);
+  });
+
+  it('agrees with the sphere case when the body is round', () => {
+    const round = { ...EARTH, flattening: 0 };
+    const camera = new PlanetCamera();
+    camera.placeAtAltitude(CENTRE, DIRECTION, 1000, round, TILTED);
+    expect(camera.distanceFromCentre(CENTRE)).toBeCloseTo(round.equatorialRadius + 1000, 6);
   });
 });

@@ -4,7 +4,12 @@
  * plus the precision figures that explain why the picture is stable.
  */
 
-import { float32PrecisionAt, type Body, type Vec3d } from '@planet/core';
+import {
+  float32PrecisionAt,
+  meanRadius as bodyMeanRadius,
+  type Body,
+  type Vec3d,
+} from '@planet/core';
 import type { DepthConfiguration, PlanetCamera, PlanetStats } from '@planet/render';
 
 export interface OverlayInput {
@@ -21,6 +26,12 @@ export interface OverlayInput {
   readonly pixelRatio: number;
   readonly drawingBufferHeight: number;
   readonly flightRunning: boolean;
+  /** Seconds past the epoch the body is posed for. */
+  readonly simSeconds: number;
+  /** Simulated seconds per real second. */
+  readonly timeScale: number;
+  /** Rotation angle of the body right now, radians. */
+  readonly spinAngle: number;
   readonly heightScale: number;
   /** Exposure value at ISO 100 currently in use. */
   readonly ev100: number;
@@ -88,8 +99,18 @@ export class Overlay {
     const depthClass = input.depth.reversedDepth ? 'ok' : 'bad';
 
     return [
-      row('body', `${body.id}  r=${sci(body.radius)} m`),
+      row(
+        'body',
+        `${body.id}  r=${sci(bodyMeanRadius(body))} m  f=1/${(1 / body.flattening).toFixed(0)}`,
+      ),
       row('altitude', `${sci(input.altitude)} m${input.flightRunning ? '' : '  [pausiert]'}`),
+      row(
+        'drehung',
+        `${degrees(input.spinAngle)}  Neigung ${degrees(body.axialTilt)}  ` +
+          `Tag ${(Math.abs(body.rotationPeriod) / 3600).toFixed(2)} h` +
+          `${body.rotationPeriod < 0 ? ' rückläufig' : ''}`,
+      ),
+      row('zeit', `${input.simSeconds.toFixed(1)} s   ${input.timeScale.toFixed(0)}x`),
       '',
       row(
         'frametime',
@@ -156,6 +177,12 @@ export class Overlay {
       ),
     ].join('\n');
   }
+}
+
+/** An angle in degrees, wrapped to 0..360. */
+function degrees(radians: number): string {
+  const deg = ((radians * 180) / Math.PI) % 360;
+  return `${(deg < 0 ? deg + 360 : deg).toFixed(1)}\u00b0`;
 }
 
 function row(label: string, value: string): string {

@@ -1,0 +1,551 @@
+{
+  "schema": "planeten.parameters.v2",
+  "hash": [
+    {
+      "args": [
+        0
+      ],
+      "out": "0x5fed0280"
+    },
+    {
+      "args": [
+        1
+      ],
+      "out": "0x65441984"
+    },
+    {
+      "args": [
+        -1
+      ],
+      "out": "0x32638cff"
+    },
+    {
+      "args": [
+        1,
+        2,
+        3
+      ],
+      "out": "0x0d788e2c"
+    },
+    {
+      "args": [
+        3,
+        2,
+        1
+      ],
+      "out": "0x03a000ef"
+    },
+    {
+      "args": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "out": "0xd3bd9105"
+    },
+    {
+      "args": [
+        2147483647,
+        -2147483648
+      ],
+      "out": "0x495cdce0"
+    },
+    {
+      "args": [
+        42,
+        6371000,
+        0,
+        0
+      ],
+      "out": "0x88ac5db5"
+    }
+  ],
+  "seedChain": [
+    {
+      "path": {
+        "universe": "planeten",
+        "sector": [
+          0,
+          0,
+          0
+        ],
+        "system": 0,
+        "body": 0
+      },
+      "seeds": {
+        "universe": 4025100371,
+        "sector": 2822367928,
+        "system": 727402262,
+        "body": 1656270469,
+        "surface": 2879048981
+      }
+    },
+    {
+      "path": {
+        "universe": "planeten",
+        "sector": [
+          12,
+          -7,
+          3
+        ],
+        "system": 5,
+        "body": 2
+      },
+      "seeds": {
+        "universe": 4025100371,
+        "sector": 3744733392,
+        "system": 45308924,
+        "body": 3388427596,
+        "surface": 4133916783
+      }
+    },
+    {
+      "path": {
+        "universe": 8675309,
+        "sector": [
+          -1,
+          -1,
+          -1
+        ],
+        "system": 31,
+        "body": 15
+      },
+      "seeds": {
+        "universe": 3133945053,
+        "sector": 3710991675,
+        "system": 1356889891,
+        "body": 727382725,
+        "surface": 179320803
+      }
+    }
+  ],
+  "bodies": [
+    {
+      "seed": 1,
+      "body": {
+        "id": "b00000001",
+        "seed": 1,
+        "surfaceSeed": 2909697094,
+        "class": "rocky",
+        "equatorialRadius": 6526137.996078452,
+        "flattening": 0.0014892875596783154,
+        "mass": 6.347621935884662e+24,
+        "rotationPeriod": 147332.34800510108,
+        "axialTilt": 0.5896152441389858,
+        "axialTiltAzimuth": 3.6384018291489575,
+        "spinAtEpoch": 0.26929284236208617,
+        "terrain": {
+          "amplitude": 8555.94943228862,
+          "frequency": 2.5523131291382013,
+          "octaves": 5,
+          "lacunarity": 1.9947784077376127,
+          "gain": 0.552072945269756,
+          "offset": [
+            490.66356897354126,
+            -264.54284834861755,
+            -263.1502914428711
+          ]
+        }
+      },
+      "derived": {
+        "surfaceGravity": 9.957162,
+        "escapeVelocity": 11397.329,
+        "meanDensity": 5460.1
+      }
+    },
+    {
+      "seed": 2,
+      "body": {
+        "id": "b00000002",
+        "seed": 2,
+        "surfaceSeed": 3738428452,
+        "class": "ice",
+        "equatorialRadius": 1445814.818015018,
+        "flattening": 0.0021958429977347454,
+        "mass": 1.998252260858419e+22,
+        "rotationPeriod": 225423.00011627376,
+        "axialTilt": 0.3130516554694623,
+        "axialTiltAzimuth": 2.843077886542964,
+        "spinAtEpoch": 5.442618987429843,
+        "terrain": {
+          "amplitude": 2249.801630502125,
+          "frequency": 2.9920082282274962,
+          "octaves": 7,
+          "lacunarity": 2.2031173361465335,
+          "gain": 0.5028688496164978,
+          "offset": [
+            494.6639382839203,
+            -7.514982223510742,
+            -277.951509475708
+          ]
+        }
+      },
+      "derived": {
+        "surfaceGravity": 0.63895,
+        "escapeVelocity": 1358.769,
+        "meanDensity": 1581.895
+      }
+    },
+    {
+      "seed": 3,
+      "body": {
+        "id": "b00000003",
+        "seed": 3,
+        "surfaceSeed": 612761553,
+        "class": "ice",
+        "equatorialRadius": 2621520.1245846073,
+        "flattening": 0.019595001658057054,
+        "mass": 1.0928950949265289e+23,
+        "rotationPeriod": 78096.38995975256,
+        "axialTilt": 0.2802020008675754,
+        "axialTiltAzimuth": 3.773846803181504,
+        "spinAtEpoch": 0.6858703619850243,
+        "terrain": {
+          "amplitude": 1732.4347138278272,
+          "frequency": 2.557334646116942,
+          "octaves": 8,
+          "lacunarity": 2.1921226499602198,
+          "gain": 0.4350987554015592,
+          "offset": [
+            406.2277364730835,
+            -261.36865878105164,
+            -381.8776659965515
+          ]
+        }
+      },
+      "derived": {
+        "surfaceGravity": 1.075399,
+        "escapeVelocity": 2366.756,
+        "meanDensity": 1476.958
+      }
+    },
+    {
+      "seed": 42,
+      "body": {
+        "id": "b0000002a",
+        "seed": 42,
+        "surfaceSeed": 3231896723,
+        "class": "rocky",
+        "equatorialRadius": 5304623.656542324,
+        "flattening": 0.08934477740370944,
+        "mass": 2.331483587962325e+24,
+        "rotationPeriod": 21997.198700532317,
+        "axialTilt": 0.4247578277718276,
+        "axialTiltAzimuth": 5.330697826812834,
+        "spinAtEpoch": 2.0127770428943625,
+        "terrain": {
+          "amplitude": 8385.558968274156,
+          "frequency": 2.7118442203383895,
+          "octaves": 7,
+          "lacunarity": 2.1996368303894993,
+          "gain": 0.5203054726170376,
+          "offset": [
+            -136.77255773544312,
+            -153.87251114845276,
+            -5.335660219192505
+          ]
+        }
+      },
+      "derived": {
+        "surfaceGravity": 5.874757,
+        "escapeVelocity": 7776.282,
+        "meanDensity": 4082.926
+      }
+    },
+    {
+      "seed": 1337,
+      "body": {
+        "id": "b00000539",
+        "seed": 1337,
+        "surfaceSeed": 961217695,
+        "class": "desert",
+        "equatorialRadius": 2873194.497940821,
+        "flattening": 0.003102445103856054,
+        "mass": 4.0076999038659294e+23,
+        "rotationPeriod": 118578.47652845085,
+        "axialTilt": 0.3826701583340764,
+        "axialTiltAzimuth": 2.115052551171235,
+        "spinAtEpoch": 0.5250789834187055,
+        "terrain": {
+          "amplitude": 6133.512137401771,
+          "frequency": 3.0419728122651577,
+          "octaves": 7,
+          "lacunarity": 1.900453657656908,
+          "gain": 0.5572208112943918,
+          "offset": [
+            -488.5639045238495,
+            -325.30782437324524,
+            118.75570964813232
+          ]
+        }
+      },
+      "derived": {
+        "surfaceGravity": 3.246905,
+        "escapeVelocity": 4317.254,
+        "meanDensity": 4046.314
+      }
+    },
+    {
+      "seed": 24301,
+      "body": {
+        "id": "b00005eed",
+        "seed": 24301,
+        "surfaceSeed": 3406081251,
+        "class": "rocky",
+        "equatorialRadius": 3468105.862114246,
+        "flattening": 0.0029841393174480195,
+        "mass": 9.196159118897061e+23,
+        "rotationPeriod": 105854.52444143593,
+        "axialTilt": 0.38768515158444644,
+        "axialTiltAzimuth": 1.9797060183591608,
+        "spinAtEpoch": 2.4209414727869154,
+        "terrain": {
+          "amplitude": 6609.796645201191,
+          "frequency": 1.95242512463592,
+          "octaves": 7,
+          "lacunarity": 1.927593803219497,
+          "gain": 0.5567263005720452,
+          "offset": [
+            -43.477147340774536,
+            -379.4410398006439,
+            4.956328868865967
+          ]
+        }
+      },
+      "derived": {
+        "surfaceGravity": 5.11319,
+        "escapeVelocity": 5952.385,
+        "meanDensity": 5278.828
+      }
+    },
+    {
+      "seed": 233495534,
+      "body": {
+        "id": "b0deadbee",
+        "seed": 233495534,
+        "surfaceSeed": 342182926,
+        "class": "moon",
+        "equatorialRadius": 1228017.906444406,
+        "flattening": 0.0007924910644524124,
+        "mass": 2.7371796161362303e+22,
+        "rotationPeriod": 251141.28771610558,
+        "axialTilt": 0.060521515924483536,
+        "axialTiltAzimuth": 4.242985213890815,
+        "spinAtEpoch": 0.8128381134215081,
+        "terrain": {
+          "amplitude": 3008.6707096094747,
+          "frequency": 3.3890380807686595,
+          "octaves": 7,
+          "lacunarity": 1.9766011563129722,
+          "gain": 0.432876746035181,
+          "offset": [
+            -466.3682460784912,
+            488.45899844169617,
+            -135.70309209823608
+          ]
+        }
+      },
+      "derived": {
+        "surfaceGravity": 1.212074,
+        "escapeVelocity": 1725.141,
+        "meanDensity": 3531.383
+      }
+    }
+  ],
+  "byClass": [
+    {
+      "bodyClass": "rocky",
+      "body": {
+        "id": "b013500c8",
+        "seed": 20250824,
+        "surfaceSeed": 4133095938,
+        "class": "rocky",
+        "equatorialRadius": 6037045.516403615,
+        "flattening": 0.0021170791127768903,
+        "mass": 4.96750305573992e+24,
+        "rotationPeriod": 124242.78933741152,
+        "axialTilt": 0.29208417618647214,
+        "axialTiltAzimuth": 3.2821980813873806,
+        "spinAtEpoch": 3.536381690777838,
+        "terrain": {
+          "amplitude": 10221.486564942474,
+          "frequency": 2.851534560089931,
+          "octaves": 4,
+          "lacunarity": 2.2807282792404293,
+          "gain": 0.4331455273833126,
+          "offset": [
+            -194.58162879943848,
+            -239.0259039402008,
+            -497.60558915138245
+          ]
+        }
+      }
+    },
+    {
+      "bodyClass": "ocean",
+      "body": {
+        "id": "b013500c8",
+        "seed": 20250824,
+        "surfaceSeed": 4133095938,
+        "class": "ocean",
+        "equatorialRadius": 7038547.700142728,
+        "flattening": 0.002456110964859153,
+        "mass": 6.783529503439971e+24,
+        "rotationPeriod": 124242.78933741152,
+        "axialTilt": 0.29208417618647214,
+        "axialTiltAzimuth": 3.2821980813873806,
+        "spinAtEpoch": 3.536381690777838,
+        "terrain": {
+          "amplitude": 6512.867829013412,
+          "frequency": 2.851534560089931,
+          "octaves": 4,
+          "lacunarity": 2.2807282792404293,
+          "gain": 0.4331455273833126,
+          "offset": [
+            -194.58162879943848,
+            -239.0259039402008,
+            -497.60558915138245
+          ]
+        }
+      }
+    },
+    {
+      "bodyClass": "ice",
+      "body": {
+        "id": "b013500c8",
+        "seed": 20250824,
+        "surfaceSeed": 4133095938,
+        "class": "ice",
+        "equatorialRadius": 2348295.489492692,
+        "flattening": 0.005153207131369438,
+        "mass": 1.1974636498460615e+23,
+        "rotationPeriod": 124242.78933741152,
+        "axialTilt": 0.29208417618647214,
+        "axialTiltAzimuth": 3.2821980813873806,
+        "spinAtEpoch": 3.536381690777838,
+        "terrain": {
+          "amplitude": 3133.1087897451266,
+          "frequency": 2.851534560089931,
+          "octaves": 4,
+          "lacunarity": 2.2807282792404293,
+          "gain": 0.4331455273833126,
+          "offset": [
+            -194.58162879943848,
+            -239.0259039402008,
+            -497.60558915138245
+          ]
+        }
+      }
+    },
+    {
+      "bodyClass": "desert",
+      "body": {
+        "id": "b013500c8",
+        "seed": 20250824,
+        "surfaceSeed": 4133095938,
+        "class": "desert",
+        "equatorialRadius": 5364698.948082296,
+        "flattening": 0.002261786882481655,
+        "mass": 3.2622960759778694e+24,
+        "rotationPeriod": 124242.78933741152,
+        "axialTilt": 0.29208417618647214,
+        "axialTiltAzimuth": 3.2821980813873806,
+        "spinAtEpoch": 3.536381690777838,
+        "terrain": {
+          "amplitude": 11000.838248828706,
+          "frequency": 2.851534560089931,
+          "octaves": 4,
+          "lacunarity": 2.2807282792404293,
+          "gain": 0.4331455273833126,
+          "offset": [
+            -194.58162879943848,
+            -239.0259039402008,
+            -497.60558915138245
+          ]
+        }
+      }
+    },
+    {
+      "bodyClass": "gasGiant",
+      "body": {
+        "id": "b013500c8",
+        "seed": 20250824,
+        "surfaceSeed": 4133095938,
+        "class": "gasGiant",
+        "equatorialRadius": 58775259.827784516,
+        "flattening": 0.008611601198532852,
+        "mass": 1.119633938727059e+27,
+        "rotationPeriod": 124242.78933741152,
+        "axialTilt": 0.29208417618647214,
+        "axialTiltAzimuth": 3.2821980813873806,
+        "spinAtEpoch": 3.536381690777838,
+        "terrain": {
+          "amplitude": 0,
+          "frequency": 2.851534560089931,
+          "octaves": 4,
+          "lacunarity": 2.2807282792404293,
+          "gain": 0.4331455273833126,
+          "offset": [
+            -194.58162879943848,
+            -239.0259039402008,
+            -497.60558915138245
+          ]
+        }
+      }
+    },
+    {
+      "bodyClass": "moon",
+      "body": {
+        "id": "b013500c8",
+        "seed": 20250824,
+        "surfaceSeed": 4133095938,
+        "class": "moon",
+        "equatorialRadius": 1444392.6617682013,
+        "flattening": 0.0036766679465825894,
+        "mass": 3.911337710684821e+22,
+        "rotationPeriod": 124242.78933741152,
+        "axialTilt": 0.29208417618647214,
+        "axialTiltAzimuth": 3.2821980813873806,
+        "spinAtEpoch": 3.536381690777838,
+        "terrain": {
+          "amplitude": 4820.166932506625,
+          "frequency": 2.851534560089931,
+          "octaves": 4,
+          "lacunarity": 2.2807282792404293,
+          "gain": 0.4331455273833126,
+          "offset": [
+            -194.58162879943848,
+            -239.0259039402008,
+            -497.60558915138245
+          ]
+        }
+      }
+    }
+  ],
+  "reference": {
+    "id": "earth-reference",
+    "seed": 1,
+    "surfaceSeed": 2909697094,
+    "class": "rocky",
+    "equatorialRadius": 6378137,
+    "flattening": 0.0033528106647474805,
+    "mass": 5.9722e+24,
+    "rotationPeriod": 86164.0905,
+    "axialTilt": 0.4090926,
+    "axialTiltAzimuth": 0,
+    "spinAtEpoch": 0,
+    "terrain": {
+      "amplitude": 0,
+      "frequency": 2,
+      "octaves": 6,
+      "lacunarity": 2,
+      "gain": 0.5,
+      "offset": [
+        0,
+        0,
+        0
+      ]
+    }
+  }
+}

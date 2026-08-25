@@ -2,15 +2,21 @@
  * A planet: quadtree selection, tile building, and the per-frame placement that
  * keeps precision rules 1 to 3.
  *
- * Every frame each drawn tile gets an object matrix that is a pure translation
- * by `tileOriginWorld - cameraWorld`, computed in float64 and narrowed once.
- * The camera sits at the origin, so the model-view product never contains a
- * large number, and the vertices it multiplies are already tile-local. That is
- * the entire precision story, and it is four lines of `update`.
+ * Every frame each drawn tile gets an object matrix built from two parts: the
+ * body's own rotation, and a translation by `tileOriginWorld - cameraWorld`
+ * computed in float64 and narrowed once. The camera sits at the origin, so the
+ * model-view product never contains a large number, and the vertices it
+ * multiplies are already tile-local. That is the entire precision story, and it
+ * is a handful of lines in `update`.
+ *
+ * The rotation is the reason the tiles are built in the body's own frame rather
+ * than in world coordinates: a tile covers the same piece of ground whatever
+ * the time of day, so it is built once and turned, not rebuilt as the planet
+ * spins. Only the matrix changes from frame to frame.
  */
 
-import { Group, Mesh, Vector3, type BufferGeometry } from 'three/webgpu';
-import { Vec3d, type Body } from '@planet/core';
+import { Group, Matrix4, Mesh, Vector3, type BufferGeometry } from 'three/webgpu';
+import { BodyPose, Vec3d, type Body } from '@planet/core';
 import { LodScheduler, type LodConfig, type LodStats, type TileBuilder } from './lod-scheduler.ts';
 import { buildTileMeshData, type TileMeshData } from './tile-mesh.ts';
 import { createTileGeometry } from './tile-geometry.ts';
@@ -27,6 +33,8 @@ export interface PlanetTile {
 export interface PlanetOptions {
   /** World position of the body's centre, float64. Default: the origin. */
   readonly center?: Vec3d;
+  /** Seconds past the epoch at construction. Fixes where the body is pointing. */
+  readonly time?: number;
   readonly lod?: Partial<LodConfig>;
   /** Skirt depth as a fraction of one cell's arc length. */
   readonly skirtFactor?: number;
@@ -52,11 +60,16 @@ export class Planet {
   readonly group = new Group();
   readonly scheduler: LodScheduler<PlanetTile>;
   readonly materialHandle: PlanetMaterialHandle;
+  /** Which way the body is pointing right now. Rebuilt from `time`. */
+  readonly pose = new BodyPose();
 
   private readonly builder: GeometryTileBuilder;
   private readonly visible = new Set<Mesh>();
   private readonly scratchWorld = new Vec3d();
+  private readonly scratchLocal = new Vec3d();
   private readonly scratchRelative = new Vector3();
+  private readonly poseMatrix = new Matrix4();
+  private seconds = 0;
   private readonly stat: PlanetStats;
   private residentTiles = 0;
   private disposed = false;
@@ -65,6 +78,7 @@ export class Planet {
     this.body = body;
     this.center = options.center ? options.center.clone() : Vec3d.zero();
     this.materialHandle = createPlanetMaterial(body, options.material);
+    this.setTime(options.time ?? 0);
 
     const gridResolution = options.lod?.gridResolution ?? 32;
     this.builder = new GeometryTileBuilder(
@@ -106,6 +120,30 @@ export class Planet {
     await this.scheduler.primeRoots();
   }
 
+  /** Seconds past the epoch the body is currently posed for. */
+  get time(): number {
+    return this.seconds;
+  }
+
+  /**
+   * Point the body at where it is at `seconds` past the epoch.
+   *
+   * Rebuilt from the absolute time rather than advanced by a delta, so the same
+   * moment always gives the same picture no matter how the frames got there.
+   */
+  setTime(seconds: number): void {
+    this.seconds = seconds;
+    this.pose.update(this.body, seconds);
+    const { x, y, z } = this.pose;
+    // three's `set` takes its arguments row by row; the pose axes are columns.
+    this.poseMatrix.set(
+      x.x, y.x, z.x, 0,
+      x.y, y.y, z.y, 0,
+      x.z, y.z, z.z, 0,
+      0, 0, 0, 1,
+    );
+  }
+
   /**
    * Select tiles and place them relative to the camera.
    *
@@ -118,6 +156,7 @@ export class Planet {
     this.scheduler.update({
       cameraPosition: camera.position,
       bodyCenter: this.center,
+      pose: this.pose,
       forward: camera.forward(),
       fovY: camera.fovY,
       aspect: screenHeight > 0 ? screenWidth / screenHeight : 1,
@@ -131,12 +170,18 @@ export class Planet {
       const tile = node.tile;
       if (!tile) continue;
 
-      // Tile origin in world coordinates, then camera-relative. Both steps in
+      // Tile origin: body-fixed, turned into world axes by the pose, then
+      // offset to the body's place, then made camera-relative. Every step in
       // float64; the narrowing to float32 happens on the way into the matrix.
-      this.scratchWorld.addVectors(this.center, tile.data.origin);
+      this.pose.toWorld(tile.data.origin, this.scratchLocal);
+      this.scratchWorld.addVectors(this.center, this.scratchLocal);
       camera.cameraRelative(this.scratchWorld, this.scratchRelative);
 
-      tile.mesh.matrix.makeTranslation(
+      // Rotate first, then translate: the vertices are body-fixed offsets from
+      // the tile origin, so they have to turn with the body before being moved
+      // into place.
+      tile.mesh.matrix.copy(this.poseMatrix);
+      tile.mesh.matrix.setPosition(
         this.scratchRelative.x,
         this.scratchRelative.y,
         this.scratchRelative.z,

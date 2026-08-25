@@ -109,7 +109,7 @@ async function walkSideways(
 
   // Settle the tree first, so a tile arriving mid-walk cannot be mistaken for
   // camera motion.
-  camera.placeAtAltitude(CENTRE, up, altitude, EARTH.radius);
+  camera.placeAtAltitude(CENTRE, up, altitude, EARTH, planet.pose);
   for (let i = 0; i < 400; i++) {
     camera.update();
     planet.update(camera, SIZE, SIZE);
@@ -127,7 +127,7 @@ async function walkSideways(
   };
 
   for (let i = 0; i < steps; i++) {
-    camera.placeAtAltitude(CENTRE, up, altitude, EARTH.radius);
+    camera.placeAtAltitude(CENTRE, up, altitude, EARTH, planet.pose);
     camera.position.addScaled(east, i * stepMetres);
     if (precision === 'f32') {
       narrowing[0] = camera.position.x;

@@ -13,7 +13,7 @@
  * exactly the frame the interactive run would have shown.
  */
 
-import { Vec3d } from '@planet/core';
+import { Vec3d, type BodyPose, type Ellipsoid } from '@planet/core';
 import type { PlanetCamera } from '@planet/render';
 
 export interface FlightOptions {
@@ -92,21 +92,23 @@ export class Flight {
    * straight down at a grey sphere from a kilometre up shows nothing that could
    * reveal jitter, and the silhouette is exactly what criterion 4 is about.
    */
-  applyTo(camera: PlanetCamera, bodyCenter: Vec3d, radius: number): void {
+  applyTo(camera: PlanetCamera, bodyCenter: Vec3d, shape: Ellipsoid, pose: BodyPose): void {
     const altitude = this.altitude;
     const longitude = this.sweep * this.progress;
 
+    // The track is a direction in space, not a place on the ground. A camera in
+    // orbit does not turn with the planet — that is what makes the rotation
+    // something you can see rather than something you have to believe. The pose
+    // still matters, because how far away the ground is under this direction
+    // depends on which latitude of the *body* it currently points at.
     const up = new Vec3d(
       Math.cos(this.latitude) * Math.cos(longitude),
       Math.sin(this.latitude),
       Math.cos(this.latitude) * Math.sin(longitude),
     ).normalize();
 
-    camera.position.set(
-      bodyCenter.x + up.x * (radius + altitude),
-      bodyCenter.y + up.y * (radius + altitude),
-      bodyCenter.z + up.z * (radius + altitude),
-    );
+    camera.placeAtAltitude(bodyCenter, up, altitude, shape, pose);
+    const distance = camera.position.distanceTo(bodyCenter);
 
     const autoTilt = smoothstep(1e6, 1e4, altitude) * 0.85;
     const tilt = Math.min(1, Math.max(0, this.tilt + autoTilt));
@@ -126,7 +128,7 @@ export class Flight {
       if (axis.isFinite() && axis.lengthSq() > 0.5) look.copy(rotateAbout(look, axis, this.pitch));
     }
 
-    const reach = Math.max(1e3, altitude * 4 + radius * 0.1);
+    const reach = Math.max(1e3, altitude * 4 + distance * 0.1);
     const target = camera.position.clone().addScaled(look, reach);
     camera.lookAt(target, up);
   }

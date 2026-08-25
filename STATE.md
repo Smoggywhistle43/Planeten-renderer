@@ -5,9 +5,9 @@ abgenommen.
 
 | | |
 |---|---|
-| Stufe | **02 — Licht und Luft**, Teil 1 und 2 von 4 |
-| Stand | Stufe 01 abgenommen bis auf Kriterium 6. Stufe 02: Licht steht, Luft fehlt noch |
-| Datum | 2026-08-24 |
+| Stufe | **02 — Der Körper**, Teil 1 bis 3 von 5 |
+| Stand | Stufe 01 abgenommen bis auf Kriterium 6. Stufe 02: Licht, Belichtung und Form stehen |
+| Datum | 2026-08-25 |
 | Three.js | r185 (`three@0.185.1`), `three/webgpu` + `three/tsl` |
 | TypeScript | 5.9.3, `strict: true` |
 | Node | ≥ 22 |
@@ -28,6 +28,9 @@ und durch ESLint, nicht durch Verabredung.
 | `hash.ts` | **die** Hashfunktion: PCG-XSH-RR 64/32 über `BigInt`. `hash`, `randFloat`, `randRange`, `randInt`, `randPick`, `Pcg32` |
 | `seed.ts` | `deriveSeed` plus die Kette Universum → Sektor → System → Körper → Oberfläche, `resolveSeedPath` |
 | `body.ts` | `Body` als reines, gefrorenes Parameterobjekt. Freie Funktionen für abgeleitete Größen. Keine Vererbung, keine Methoden |
+| `photometry.ts` | Die Lichtphysik: Sonne als `Star`, Abstandsgesetz, Lambert, EV100, Kamera-Dreieck, gemessene Albedos |
+| `shape.ts` | Die **Form**: Rotationsellipsoid, `surfaceRadius`, `geodeticNormal`, `curvatureRadius`, `altitudeAbove`, `hydrostaticFlattening` |
+| `orientation.ts` | Die **Drehung**: `BodyPose` (körperfeste Achsen in Weltkoordinaten), Achsneigung, Spinwinkel aus absoluter Zeit, `surfaceVelocity` |
 
 `Math.random()` ist in `core` verboten und wird an zwei Stellen geblockt.
 `hash` wirft bei nicht-ganzzahligen Eingaben, statt sie stillschweigend zu
@@ -70,16 +73,28 @@ Schrittsteuerung frei, an der der Abnahmelauf hängt.
 
 ---
 
-## Stufe 02 — Licht und Luft
+## Stufe 02 — Der Körper
 
-Vier Teile, in Baureihenfolge. Zwei stehen.
+Die Stufe hieß ursprünglich „Licht und Luft". Umbenannt und neu geschnitten,
+auf Entscheidung des Auftraggebers und mit einer Begründung, die trägt:
+
+> Wir bauen erstmal nur das, was **alle** Himmelskörper haben und haben müssen.
+> Nicht alle Planeten haben eine Atmosphäre, nicht alle haben Ringe.
+
+Also erst das Fundament, das jeder Körper braucht — Licht, Form, Drehung,
+Oberfläche, Bildruhe. Die Atmosphäre ist Ausrüstung und rückt nach hinten.
+
+Fünf Teile, in Baureihenfolge. Drei stehen.
 
 | | Inhalt | Stand |
 |---|---|---|
-| 2.1 | HDR, physikalische Einheiten, echte Sonne, Albedo als Reflektanz | **fertig** |
+| 2.1 | Licht in echten Einheiten | **fertig** |
 | 2.2 | Belichtung und Tonemapping | **fertig**, Automatik fehlt noch |
-| 2.3 | Motion Vectors und TAA | offen |
-| 2.4 | Atmosphäre | offen |
+| 2.3 | Form: Ellipsoid statt Kugel, Drehung, Achsneigung, körperfestes System | **fertig** |
+| 2.4 | Oberfläche: Helligkeit und Ausrichtung auf jeder Stufe, Eigenverschattung | offen |
+| 2.5 | Bildruhe (TAA) | offen |
+
+Danach Stufe 03: echte Erddaten in diese Mechanik. Atmosphäre später.
 
 ### Licht in echten Einheiten
 
@@ -139,12 +154,89 @@ Erdalbedo. `+`/`-` verschieben um eine Blende, `0` setzt zurück.
 **Noch keine Automatik.** Die Belichtung ist die analytische Vorhersage, keine
 Messung des Bildes. Der Histogramm-Compute-Pass ist der nächste kleine Schritt.
 
+### Form: der Körper ist keine Kugel
+
+Ein Körper, der sich dreht, wölbt sich am Äquator. Das ist keine Eigenschaft
+mancher Planeten, sondern das, was Rotation und Masse mit allem machen, was
+groß genug ist, rund zu sein. Deshalb steht es im Fundament neben Licht und
+Masse — und deshalb wird die Abplattung *aus* Rotation und Masse gerechnet,
+nicht als freier Parameter gewürfelt.
+
+| Körper | Abplattung | in Zahlen |
+|---|---|---|
+| Erde | 1/298 | 21 km Unterschied, 0.34 % — drei Pixel auf einer 1000-Pixel-Scheibe |
+| Jupiter | 1/15 | 6.5 % |
+| Saturn | 1/10 | 9.8 %, nicht zu übersehen |
+
+`Body` erbt jetzt von `Ellipsoid` und `Spinning`. **Das Feld `radius` wurde
+ersatzlos entfernt**, damit der Compiler jede der 33 Stellen findet, an denen
+bisher „ein Radius" angenommen wurde — statt sie stillschweigend weiterlaufen
+zu lassen. Ersetzt haben es `equatorialRadius` + `flattening` und die freien
+Funktionen `meanRadius`, `polarRadius`, `surfaceRadius(shape, richtung)`.
+
+Drei Größen, die auf einer Kugel dasselbe sind und hier nicht:
+
+| | |
+|---|---|
+| **geozentrisch** | die Richtung vom Mittelpunkt zum Punkt |
+| **geodätisch** | die Richtung senkrecht auf der Oberfläche — das, was Beschattung braucht |
+| **Krümmungsradius** | wie stark sich die Fläche biegt — das, was die LOD-Fehlerschätzung braucht |
+
+Auf der Erde weichen die ersten beiden um bis zu 11.5 Bogenminuten voneinander
+ab, bei 45 Grad Breite. Der Krümmungsradius geht *andersherum* als die
+Intuition: am Pol ist der Körper flacher als sein kurzer Polradius nahelegt
+(a²/b = 6399 km), am Äquator biegt er sich stärker als sein langer
+Äquatorradius nahelegt (b²/a = 6335 km). Die Tile-Normalen sind jetzt die
+geodätischen; `normals` ist deshalb kein Alias von `directions` mehr.
+
+Die Abplattung eines Körpers ist eine **Messung**, keine Eingabe:
+`hydrostaticFlattening` sagt für eine homogene Erde 1/232 voraus, gemessen ist
+1/298. Der Unterschied ist kein schlechter Näherungswert, sondern Physik — die
+Masse der Erde sitzt im Kern, also wölben sich ihre äußeren Schichten weniger
+als bei gleichmäßiger Dichte. Erzeugte Körper bekommen die Vorhersage, Körper
+mit gemessenem Wert behalten ihren.
+
+### Drehung und Achsneigung
+
+`BodyPose` sind drei orthonormale Achsen — die körperfesten Achsen in
+Weltkoordinaten. Kein Quaternion, keine Matrixklasse: das ist das Kleinste,
+was die Aufgabe erledigt, und hält `core` frei von einer Mathebibliothek.
+
+Die Drehung wird **aus der absoluten Zeit neu aufgebaut, nie aufaddiert**.
+Eine aufaddierte Rotation driftet aus der Orthonormalität heraus und, schlimmer,
+macht die Welt von der Bildrate abhängig. Ein Test prüft, dass tausend kleine
+Schritte auf 1e-12 genau dort landen wie ein großer Sprung.
+
+Das Quadtree lebt jetzt im **körperfesten** System: ein Tile liegt über
+demselben Stück Boden, egal wie weit der Planet gedreht ist. Es wird einmal
+gebaut und gedreht, nicht bei jeder Drehung neu gebaut. Pro Frame wandert
+stattdessen die Kamera einmal in dieses System — dieselbe Bewegung, aber
+einmal statt pro Knoten. Die Objektmatrix eines Tiles ist deshalb nicht mehr
+eine reine Translation, sondern die Drehung des Körpers plus die
+kamerarelative Translation.
+
+Im Explorer: `,` und `.` ändern den Zeitraffer, `;` setzt die Uhr zurück. Bei
+1x dreht sich die Erde 15 Grad pro Stunde, also sichtbar gar nicht; bei 3600x
+dauert ein Tag 24 Sekunden.
+
 ### Ansichten
 
 `pnpm portrait` rendert einen Satz Bilder nach `artifacts/portrait/` —
-Terminator, Sichel, Horizont, plus eine Belichtungsreihe über vier Blenden.
-Kein Gatter, nur zum Anschauen. Für einen Renderer, der echt aussehen soll,
-ist Hinsehen das eigentliche Prüfverfahren.
+Terminator, Sichel, Horizont, Blick von oben auf die geneigte Achse, eine
+Belichtungsreihe über vier Blenden und eine Drehreihe über einen Tag. Kein
+Gatter, nur zum Anschauen. Für einen Renderer, der echt aussehen soll, ist
+Hinsehen das eigentliche Prüfverfahren.
+
+**Zur Drehreihe, unumwunden:** ein glatter grauer Körper kann nicht zeigen,
+dass er sich dreht. Kamera fest, Sonne fest, keine Merkmale — jede Stunde sieht
+gleich aus. Die Reihe schaltet deshalb das Höhenfeld ein und **überhöht es
+20-fach auf 240 km**; real sind es 20 km vom Marianengraben zum Everest, also
+ein Fünftel Prozent des Radius und aus dieser Entfernung unsichtbar. Auch so
+ist die Drehung nur an der Kontur zu erkennen, nicht auf der Fläche. Das
+überzeugende Bild kommt mit Teil 2.4, wenn die Oberfläche Helligkeit hat. Was
+die Drehung *beweist*, sind bis dahin die Tests, nicht die Bilder — unter
+anderem: derselbe Boden wird zu jeder Tageszeit ausgewählt, und eine feststehende
+Kamera sieht sechs Stunden später anderen Boden.
 
 ---
 
@@ -157,13 +249,17 @@ Die vier Regeln aus dem Handoff, und wo sie im Code stehen:
    beziehungsweise `PlanetCamera.cameraRelative`, und sie wirkt immer auf eine
    Differenz, die schon klein ist.
 2. **Tile-Vertices relativ zum eigenen Tile-Origin.** `buildTileMeshData`
-   rechnet `dir * radius - origin` in float64 und schreibt erst das Ergebnis
-   nach float32.
+   rechnet `dir * surfaceRadius(körper, dir) - origin` in float64 und schreibt
+   erst das Ergebnis nach float32. Der Radius ist seit Stufe 2.3 pro Vertex
+   verschieden, die Rechnung bleibt dieselbe.
 3. **Kamera auf (0,0,0).** `PlanetCamera.update` setzt die `three`-Kamera bei
    jedem Frame auf den Ursprung; die View-Matrix ist eine reine Rotation.
    Das Produkt aus View- und Objektmatrix entsteht auf der CPU in float64 und
    wird einmal verengt (`renderer.highPrecision`), nicht aus zwei einzeln
-   verengten Matrizen im Shader — siehe Abweichung 2.
+   verengten Matrizen im Shader — siehe Abweichung 2. Die Objektmatrix trägt
+   seit Stufe 2.3 zusätzlich die Drehung des Körpers; ein GPU-Test prüft, dass
+   sie starr bleibt (Spalten normiert, senkrecht, Determinante +1), denn eine
+   eingeschlichene Skalierung würde den Planeten strecken.
 4. **Rebasing** bei 4096 m Drift, `Frame.update`.
 
 Reversed-Z läuft über `reversedDepthBuffer: true`. Three r185 setzt damit die
@@ -177,9 +273,17 @@ auftaucht.
 
 ## Snapshots und Checksummen
 
-| Name | Ort | Prüfsumme |
-|---|---|---|
-| `stage-01` | `packages/core/test/golden/stage-01.json` | `0x233c912e` |
+| Name | Ort | Prüfsumme | Stufe |
+|---|---|---|---|
+| `parameters` | `packages/core/test/golden/parameters.json` | `0xeffcac24` | 02 (aktuell) |
+| `stage-01` | `docs/abnahme/stufe-01/parameter-snapshot.json` | `0x233c912e` | 01, archiviert |
+
+Die Prüfsumme hat sich in Stufe 2.3 geändert, und zwar mit Absicht: `Body`
+trägt statt `radius` nun `equatorialRadius` und `flattening`, und die
+Abplattung wird aus Masse und Rotationsdauer gerechnet. Damit sehen alle
+erzeugten Körper anders aus als in Stufe 01. Der alte Snapshot liegt
+unverändert im Abnahmeordner der Stufe 01, damit nachvollziehbar bleibt, was
+sich geändert hat.
 
 Der Snapshot deckt ab: rohe Hash-Vektoren, drei vollständige Seed-Ketten,
 sieben aus Seeds erzeugte Körper mit ihren abgeleiteten Größen, je einen
@@ -206,36 +310,96 @@ Belege erzeugt `pnpm acceptance`; sie landen unter `artifacts/`
 sowie mit LOD-Einfärbung). Der Lauf steppt den Flug frameweise, hängt also
 nicht an der Wanduhr und ist wiederholbar.
 
-Der abgenommene Lauf dieser Stufe liegt eingecheckt unter
-[`docs/abnahme/stufe-01/`](docs/abnahme/stufe-01/) — Bericht, Rohdaten und
-vier Bilder. `artifacts/` selbst ist Arbeitsverzeichnis und nicht versioniert.
+Die abgenommenen Läufe liegen eingecheckt unter
+[`docs/abnahme/stufe-01/`](docs/abnahme/stufe-01/) und
+[`docs/abnahme/stufe-02/`](docs/abnahme/stufe-02/) — Bericht, Rohdaten, der
+archivierte Parameter-Snapshot der Stufe 01 und ausgewählte Bilder.
+`artifacts/` selbst ist Arbeitsverzeichnis und nicht versioniert.
 
 | # | Kriterium | Stand |
 |---|---|---|
-| 1 | `pnpm test` grün, Golden Tests bestehen | **erfüllt** — 176 Tests: 155 in Node, 21 gegen ein echtes WebGPU-Gerät |
+| 1 | `pnpm test` grün, Golden Tests bestehen | **erfüllt** — 301 Tests: 267 in Node, 34 gegen ein echtes WebGPU-Gerät |
 | 2 | `pnpm check:deps` bestätigt: `core` ohne `three` | **erfüllt** |
-| 3 | Graue Kugel, Radius 6.371e6 m | **erfüllt** — Silhouettenradius gegen die Projektion einer 6.371e6-m-Kugel: Abweichung ≤ 0.04 % bei 1e7 m, ≤ 4 % nur dort, wo die Scheibe wenige Pixel groß ist. Ein Kreisfit durch die Kontur liegt auf 0.24–0.32 px |
+| 3 | Körper mit mittlerem Radius 6.371e6 m | **erfüllt, neu gemessen** — siehe unten. Das Kriterium hieß in Stufe 01 „graue Kugel"; seit Stufe 2.3 ist der Körper ein Ellipsoid mit demselben mittleren Radius |
 | 4 | Flug 1e9 → 1e3 m ohne Zittern, ohne Z-Fighting | **erfüllt** — siehe unten |
-| 5 | Overlay zeigt Knotenbauten pro Frame, Wert ≤ Budget | **erfüllt** — Spitze 2 bei Budget 2, davon 0.2 % der Frames am Anschlag; Einschwingzeit ≤ 12 Frames |
+| 5 | Overlay zeigt Knotenbauten pro Frame, Wert ≤ Budget | **erfüllt** — Spitze 2 bei Budget 2, davon 5 % der Frames am Anschlag; Einschwingzeit ≤ 4 Frames im Abnahmelauf, ≤ 12 aus kaltem Baum |
 | 6 | Overlay zeigt Frametime, 60 fps auf dem M5 Air bei dpr 2 | **offen** — hier nicht entscheidbar, siehe offene Punkte |
+
+### Zwei Messfehler im Abnahmelauf, gefunden und behoben
+
+Der Abnahmelauf ist beim ersten Start dieser Stufe **durchgefallen** — zu Recht,
+und aus zwei Gründen, die beide älter waren als die Form:
+
+1. **Er hat Licht gezählt, nicht Körper.** Der Scheibenradius kommt aus der Zahl
+   der Pixel über der Himmelsschwelle. Seit Stufe 2.1 ist die Nachtseite
+   wirklich dunkel (Sternenlicht, 0.002 lx) statt von einem Fülllicht
+   aufgehellt — also zählte die Messung nur noch die *Tagseite*. Ergebnis: der
+   Radius fiel um 2 bis 11 % zu klein aus, und die unbeleuchtete Hälfte wurde
+   als 8500 „Löcher zwischen Tiles" ausgewiesen. Der Harness stellt die Sonne
+   für die Messaufnahmen jetzt hinter die Kamera (`setSunBehindCamera`). Die
+   sehenswerten Lichtstimmungen leben in `pnpm portrait`, wo nichts gezählt
+   wird. Danach: Radiusabweichung 0.01 bis 0.19 %.
+
+2. **Eine Zusicherung war stumm gestorben.** Der Lauf prüfte
+   `Math.abs(body.radius - 6.371e6) > 1`. Seit `radius` entfernt ist, ist das
+   `NaN > 1`, also `false` — die Prüfung war noch da und hat nichts mehr
+   geprüft. Ersetzt durch mittleren Radius **und** Abplattung.
+
+Beides zeigt dieselbe Sache: eine Kennzahl, die einmal gestimmt hat, stimmt
+nicht weiter, nur weil niemand hinsieht.
 
 ### Gemessene Werte des letzten Laufs
 
-720 x 450 px, dpr 1, zehn Höhen von 1e9 bis 1e3 m.
+720 x 450 px, dpr 1, zehn Höhen von 1e9 bis 1e3 m, Sonne für die Messaufnahmen
+hinter der Kamera.
 
-| Höhe | Tiefe | Tiles | Fehler | Builds/Frame | Silhouette |
-|---|---|---|---|---|---|
-| 1e9 m | 0 | 5 | 0.00 px | 0/2 | Scheibe zu klein zum Messen |
-| 1e8 m | 0 | 5 | 0.01 px | 0/2 | Kreis auf 0.24 px (RMS 0.10) |
-| 3e7 m | 0 | 5 | 0.02 px | 0/2 | Kreis auf 0.31 px (RMS 0.12) |
-| 1e7 m | 0 | 5 | 0.06 px | 0/2 | Kreis auf 0.32 px (RMS 0.13) |
-| 1e5 m | 2 | 7 | 0.54 px | 2/2 | Horizont: max 0.52 px, Median 0 |
-| 1e4 m | 3 | 11 | 1.39 px | 2/2 | Horizont: max 0.52 px, Median 0 |
-| 3e3 m | 4 | 6 | 1.18 px | 2/2 | Horizont: max 0.52 px, Median 0 |
-| 1e3 m | 5 | 7 | 0.87 px | 2/2 | Horizont: max 0.52 px, Median 0 |
+| Höhe | Tiefe | Tiles | Fehler | Builds/Frame | Radius ist/soll | Silhouette |
+|---|---|---|---|---|---|---|
+| 1e9 m | 0 | 5 | 0.00 px | 0/2 | 2.8 / 3.1 px | Scheibe zu klein |
+| 3e8 m | 0 | 5 | 0.00 px | 0/2 | 10.0 / 10.0 px (0.01 %) | zu wenige Randspalten |
+| 1e8 m | 0 | 5 | 0.01 px | 0/2 | 29.0 / 28.9 px (0.17 %) | Ellipse 28.5x28.2 px, max 0.33 px |
+| 3e7 m | 0 | 5 | 0.02 px | 0/2 | 85.9 / 85.8 px (0.19 %) | Ellipse 85.5x85.3 px, max 0.41 px |
+| 1e7 m | 0 | 5 | 0.06 px | 0/2 | 204.0 / 203.6 px (0.18 %) | Ellipse 203.5x203.2 px, max 0.27 px |
+| 1e6 m | 0 | 3 | 0.57 px | 0/2 | beschnitten | Horizont füllt das Bild |
+| 1e5 m | 2 | 7 | 0.54 px | 2/2 | beschnitten | Horizont: max 0.45 px, Median 0 |
+| 1e4 m | 3 | 11 | 1.40 px | 2/2 | beschnitten | Horizont: max 0.46 px, Median 0 |
+| 3e3 m | 4 | 6 | 1.19 px | 2/2 | beschnitten | Horizont: max 0.46 px, Median 0 |
+| 1e3 m | 5 | 8 | 0.87 px | 2/2 | beschnitten | Horizont: max 0.46 px, Median 0 |
 
 Risse: null Hintergrundpixel im Inneren der Scheibe, überall wo die Messung
 etwas taugt. Flimmern: unter 0.01 % der Innenpixel.
+
+### Kriterium 3 als Form, nicht nur als Größe
+
+Der Kreisfit von Stufe 01 ist ein **Ellipsenfit** geworden. Ein Kreis würde die
+Abplattung selbst als Fehler ausweisen — auf der Erde 0.34 % des Radius, mehr
+als die Toleranz, die der Test halten soll. Gemessen wird jetzt die allgemeine
+Kegelschnittform durch die Kontur, fünf Unbekannte, kleinste Quadrate.
+
+Zwei Dinge waren dafür nötig und beide sind lehrreich:
+
+- **Die Kontur muss ganz sein.** Der alte Fit nahm pro Bildspalte nur den
+  *oberen* Übergang. Für einen Kreis (drei Unbekannte) reicht ein Bogen; für
+  eine Ellipse (fünf) nicht — auf einer 29-Pixel-Scheibe las der Fit die
+  Abplattung als 0.051 statt 0.0034, weil er den Kegelschnitt frei kippen
+  konnte. Mit oberem *und* unterem Rand ist er stabil.
+- **Die lange Achse ist die belastbare Zahl.** Wie ein abgeplatteter Körper
+  auch steht: die größte Ausdehnung seiner Kontur ist immer der Äquatordurch-
+  messer. Dagegen wird geprüft.
+
+| Scheibe | lange Achse ist/soll | abgelesene Abplattung |
+|---|---|---|
+| 29 px | 28.5 / 28.9 px | 0.0103 |
+| 86 px | 85.5 / 85.8 px | 0.0024 |
+| 204 px | 203.5 / 203.6 px | 0.0012 |
+
+Die lange Achse stimmt auf 0.2 %. Die abgelesene Abplattung streut um den
+wahren Wert 0.00335, und das ist ehrlich der Rand des Messbaren: 0.34 % von
+203 px sind 0.7 Pixel Unterschied zwischen den Achsen, und der Subpixel-Rand
+wird an den Flanken schlechter geschätzt als oben und unten. Der Test prüft
+deshalb nur, dass die abgelesene Abplattung zwischen null und der wahren liegt
+— mehr gibt das Bild bei diesen Scheibengrößen nicht her. Ein Körper wie Saturn
+wäre eine ganz andere Ansage.
 
 ### Budget-Auslastung und Einschwingzeit
 
@@ -451,7 +615,15 @@ Der Reihe nach, mit Begründung.
 6. **`sampleHeightCached` hat keine Verdrängung.** Der Cache wächst, bis der
    Körper wechselt. Für Stufe 01 mit ein paar tausend Testpunkten egal.
 
-7. **Der Explorer bündelt 870 kB.** Fast alles davon ist `three/webgpu`. Kein
+7. **Die Silhouette ist keine Kreislinie mehr.** Der Abnahmelauf fittet einen
+   Kreis durch die Kontur; auf einem um 1/298 abgeplatteten Körper ist die
+   Kontur eine Ellipse, also enthält die ausgewiesene Abweichung jetzt einen
+   systematischen Anteil von bis zu 0.34 % des Radius. Kriterium 3 aus Stufe 01
+   („graue Kugel, Radius 6.371e6 m") ist damit bewusst überholt: der mittlere
+   Radius liegt weiter bei 6 371 008.8 m, der Körper ist aber keine Kugel mehr.
+   Der Fit gehört auf eine Ellipse umgestellt.
+
+8. **Der Explorer bündelt 870 kB.** Fast alles davon ist `three/webgpu`. Kein
    Code-Splitting, weil es nichts zu splitten gibt.
 
 ---
@@ -477,6 +649,31 @@ falsch.
   und vergleicht dort. Solange der Körper im Weltursprung liegt, fällt eine
   Verwechslung nicht auf — deshalb prüft ein Test die Auswahl mit einem
   Körper bei 4e11 m.
+
+- **Ein optionaler Parameter, der die Antwort um Kilometer verschiebt.**
+  `placeAtAltitude` und `altitudeAbove` bekamen die `BodyPose` erst als
+  optionales Argument. Wer sie vergisst, behandelt eine Weltrichtung als
+  körperfeste — und bei 23.4 Grad Achsneigung liegt der Boden dann bis zu
+  6.5 km woanders. Genau das ist im GPU-Jitter-Test passiert: eine Kamera, die
+  auf 1000 m stehen sollte, stand auf 5800 m, der Baum schwang zwei Stufen
+  flacher ein, und das Bild reagierte fünfmal schwächer auf Kamerabewegung.
+  Nichts warf, nichts loggte. Der Parameter ist jetzt **Pflicht**; ein Körper
+  ohne Neigung übergibt ein frisches `new BodyPose()`. Regressionstests in
+  `packages/render/test/planet-camera.test.ts`.
+
+- **Alle sechs Würfelseiten teilen sich in Tiefe 0 dieselben acht Ecken.** Ein
+  Mittelwert über die Ecken eines Wurzelknotens ist deshalb für alle sechs
+  Seiten identisch — die Polseite und die Äquatorseite kämen auf denselben
+  Radius. Auf der Erde sind das 21 km Fehler, auf Saturn 6000 km.
+  `nodeSurfaceRadius` mittelt deshalb über Ecken **und** Mitte.
+
+- **Der Horizont eines abgeplatteten Körpers ist kein Kreis.** Ein einzelner
+  Radius im Horizonttest ist entweder zu klein (dann verschwindet sichtbarer
+  Boden) oder zu groß (dann bleibt unnötig viel stehen — gemessen 40 % mehr
+  Tiles am Rand). Gelöst, indem der Körper durch seine zwei Radien geteilt und
+  damit auf die Einheitskugel gestaucht wird; dort ist der Horizont wieder eine
+  Ebene und der Test ein Skalarprodukt. Danach wählt der Scheduler auf dem
+  Ellipsoid Tile für Tile dasselbe wie auf der Kugel.
 
 - **Ein WebGPU-Canvas lässt sich nur im selben Task zurücklesen**, in dem
   gezeichnet wurde. Ein `await` dazwischen, und `drawImage` liefert

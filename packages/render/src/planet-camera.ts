@@ -10,7 +10,10 @@
  */
 
 import { Matrix4, PerspectiveCamera, Quaternion, Vector3 } from 'three/webgpu';
-import { Frame, Vec3d } from '@planet/core';
+import { Frame, Vec3d, surfaceRadius, type BodyPose, type Ellipsoid } from '@planet/core';
+
+const UP = /*@__PURE__*/ new Vec3d(0, 1, 0);
+const scratchDirection = /*@__PURE__*/ new Vec3d();
 
 export interface PlanetCameraOptions {
   /** Vertical field of view, radians. Default 50 degrees. */
@@ -173,27 +176,57 @@ export class PlanetCamera {
     return this.position.distanceTo(bodyCenter);
   }
 
-  /** Height above a body's mean surface, metres. Negative below it. */
-  altitudeAbove(bodyCenter: Vec3d, radius: number): number {
-    return this.distanceFromCentre(bodyCenter) - radius;
+  /**
+   * Height above a body's surface, metres. Negative below it.
+   *
+   * The body is not round, so this is not "distance minus one radius". Over the
+   * pole of a body as gently flattened as Earth that shortcut is already 21 km
+   * out — enough to put a camera on final approach underground.
+   *
+   * `pose` says which way the body's axis is pointing, and is required rather
+   * than optional on purpose: a tilted Earth is 6.5 km out at mid latitudes if
+   * you forget it, and nothing would complain. A body that does not turn takes
+   * a fresh `new BodyPose()`, which is the identity. The spin itself never
+   * matters here — an ellipsoid looks the same from every longitude.
+   */
+  altitudeAbove(bodyCenter: Vec3d, shape: Ellipsoid, pose: BodyPose): number {
+    const distance = this.distanceFromCentre(bodyCenter);
+    if (distance === 0) return -surfaceRadius(shape, UP);
+    return distance - surfaceRadius(shape, this.bodyFixedDirection(bodyCenter, pose));
+  }
+
+  /** Unit direction from a body's centre to the camera, in the body's frame. */
+  private bodyFixedDirection(bodyCenter: Vec3d, pose: BodyPose): Vec3d {
+    const d = scratchDirection.subVectors(this.position, bodyCenter);
+    const length = d.length();
+    if (length === 0) return d.copy(UP);
+    d.scale(1 / length);
+    return pose.toBody(d, d);
   }
 
   /**
    * Place the camera on a radial from a body's centre at a given altitude, and
    * point it at the centre. Used by the scripted acceptance flight, where the
    * camera has to land on an exact altitude rather than approximately one.
+   *
+   * `direction` is a world direction. `pose` turns it into the body's frame to
+   * find how far away the ground is along it, and is required for the same
+   * reason as in `altitudeAbove`.
    */
   placeAtAltitude(
     bodyCenter: Vec3d,
     direction: Vec3d,
     altitude: number,
-    radius: number,
+    shape: Ellipsoid,
+    pose: BodyPose,
   ): void {
     const unit = direction.clone().normalize();
+    const bodyFixed = pose.toBody(unit, scratchDirection.copy(unit));
+    const distance = surfaceRadius(shape, bodyFixed) + altitude;
     this.position.set(
-      bodyCenter.x + unit.x * (radius + altitude),
-      bodyCenter.y + unit.y * (radius + altitude),
-      bodyCenter.z + unit.z * (radius + altitude),
+      bodyCenter.x + unit.x * distance,
+      bodyCenter.y + unit.y * distance,
+      bodyCenter.z + unit.z * distance,
     );
     this.lookAt(bodyCenter, unit);
   }

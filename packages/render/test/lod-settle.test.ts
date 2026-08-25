@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { Vec3d, referenceBody } from '@planet/core';
+import { Vec3d, referenceBody, surfaceRadius } from '@planet/core';
 import { LodScheduler, type TileBuilder, type ViewParams } from '../src/lod-scheduler.ts';
 import { nodeId, type NodeKey } from '../src/cube-sphere.ts';
 
@@ -39,7 +39,7 @@ const DIR = new Vec3d(
 
 function viewAt(altitude: number, screenHeight = 1080): ViewParams {
   return {
-    cameraPosition: DIR.clone().scale(EARTH.radius + altitude),
+    cameraPosition: DIR.clone().scale(surfaceRadius(EARTH, DIR) + altitude),
     bodyCenter: new Vec3d(0, 0, 0),
     forward: DIR.clone().negate(),
     fovY: (50 * Math.PI) / 180,

@@ -103,7 +103,7 @@ describe('the render path on a real device', () => {
     await planet.init();
 
     // Far enough out that the whole disk is in frame.
-    camera.placeAtAltitude(CENTRE, new Vec3d(1, 0.2, 0.3), 2e7, EARTH.radius);
+    camera.placeAtAltitude(CENTRE, new Vec3d(1, 0.2, 0.3), 2e7, EARTH, planet.pose);
     camera.update();
     planet.update(camera, SIZE, SIZE);
 
@@ -127,7 +127,7 @@ describe('the render path on a real device', () => {
     scene.add(planet.group);
     await planet.init();
 
-    camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), 2e7, EARTH.radius);
+    camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), 2e7, EARTH, planet.pose);
     // Look away from the body.
     camera.lookAt(new Vec3d(1e12, 0, 0));
     camera.update();
@@ -151,7 +151,7 @@ describe('the render path on a real device', () => {
     let peak = 0;
     for (let i = 0; i <= 120; i++) {
       const altitude = 1e9 * (1e3 / 1e9) ** (i / 120);
-      camera.placeAtAltitude(CENTRE, new Vec3d(0.69, 0.33, 0.64), altitude, EARTH.radius);
+      camera.placeAtAltitude(CENTRE, new Vec3d(0.69, 0.33, 0.64), altitude, EARTH, planet.pose);
       camera.update();
       planet.update(camera, SIZE, SIZE);
       peak = Math.max(peak, planet.stats.buildsStartedThisFrame);
@@ -170,7 +170,7 @@ describe('the render path on a real device', () => {
     scene.add(planet.group);
     await planet.init();
 
-    camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), 2e7, EARTH.radius);
+    camera.placeAtAltitude(CENTRE, new Vec3d(1, 0, 0), 2e7, EARTH, planet.pose);
     camera.update();
     planet.update(camera, SIZE, SIZE);
 
@@ -194,7 +194,7 @@ describe('the render path on a real device', () => {
     });
     await planet.init();
 
-    camera.placeAtAltitude(CENTRE, new Vec3d(0.69, 0.33, 0.64), 1e3, EARTH.radius);
+    camera.placeAtAltitude(CENTRE, new Vec3d(0.69, 0.33, 0.64), 1e3, EARTH, planet.pose);
     for (let i = 0; i < 300; i++) {
       camera.update();
       planet.update(camera, SIZE, SIZE);
@@ -208,12 +208,41 @@ describe('the render path on a real device', () => {
       for (const value of tile.data.positions) {
         expect(Math.abs(value)).toBeLessThan(1e7);
       }
-      const translation = tile.mesh.matrixWorld.elements;
-      // The object matrix is a pure camera-relative translation.
-      expect(translation[0]).toBe(1);
-      expect(translation[5]).toBe(1);
-      expect(translation[10]).toBe(1);
-      expect(Number.isFinite(translation[12] as number)).toBe(true);
+      // The object matrix is the body's rotation plus a camera-relative
+      // translation, and nothing else. It used to be a pure translation; now
+      // that the body turns, the invariant that matters is that the rotation
+      // part is rigid — unit-length, perpendicular columns, no scale and no
+      // mirror. Any scale here would stretch the planet, and any drift out of
+      // orthonormality would shear it a little more every frame.
+      const m = tile.mesh.matrixWorld.elements;
+      const at = (i: number): number => m[i] as number;
+      const columns = [
+        [at(0), at(1), at(2)],
+        [at(4), at(5), at(6)],
+        [at(8), at(9), at(10)],
+      ] as const;
+      for (const c of columns) {
+        expect(Math.hypot(c[0], c[1], c[2])).toBeCloseTo(1, 6);
+      }
+      const dot = (a: readonly number[], b: readonly number[]): number =>
+        (a[0] as number) * (b[0] as number) +
+        (a[1] as number) * (b[1] as number) +
+        (a[2] as number) * (b[2] as number);
+      expect(dot(columns[0], columns[1])).toBeCloseTo(0, 6);
+      expect(dot(columns[1], columns[2])).toBeCloseTo(0, 6);
+      expect(dot(columns[2], columns[0])).toBeCloseTo(0, 6);
+      expect(tile.mesh.matrixWorld.determinant()).toBeCloseTo(1, 6);
+
+      // And it is the body's own rotation, not some other one.
+      expect(columns[1][0]).toBeCloseTo(planet.pose.y.x, 9);
+      expect(columns[1][1]).toBeCloseTo(planet.pose.y.y, 9);
+      expect(columns[1][2]).toBeCloseTo(planet.pose.y.z, 9);
+
+      // The translation stays camera-relative: no absolute world position.
+      expect(Number.isFinite(at(12))).toBe(true);
+      expect(Math.abs(at(12))).toBeLessThan(1e8);
+      expect(Math.abs(at(13))).toBeLessThan(1e8);
+      expect(Math.abs(at(14))).toBeLessThan(1e8);
     }
     planet.dispose();
   }, 180_000);
@@ -245,7 +274,7 @@ describe('the body far from the world origin', () => {
     scene.add(planet.group);
     await planet.init();
 
-    camera.placeAtAltitude(centre, new Vec3d(0.69, 0.33, 0.64), 2e7, EARTH.radius);
+    camera.placeAtAltitude(centre, new Vec3d(0.69, 0.33, 0.64), 2e7, EARTH, planet.pose);
     for (let i = 0; i < 60; i++) {
       camera.update();
       planet.update(camera, SIZE, SIZE);

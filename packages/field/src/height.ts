@@ -13,7 +13,7 @@
 
 import { Fn, float, mx_fractal_noise_float, normalize, select, uniform, vec3 } from 'three/tsl';
 import { Vector3, type Node } from 'three/webgpu';
-import type { Body } from '@planet/core';
+import { ellipsoidMeanRadius, type Body } from '@planet/core';
 
 /** Shorthand for a TSL expression of the given type. */
 export type Vec3Node = Node<'vec3'>;
@@ -40,7 +40,7 @@ export function createHeightUniforms(body: Body) {
     /** Domain offset, so two bodies with the same shape parameters differ. */
     offset: uniform(new Vector3(t.offset[0], t.offset[1], t.offset[2])),
     /** Mean radius in metres. Needed to turn a height gradient into a normal. */
-    radius: uniform(body.radius, 'float'),
+    radius: uniform(ellipsoidMeanRadius(body), 'float'),
   };
 }
 
@@ -71,7 +71,7 @@ export function updateHeightUniforms(u: HeightUniforms, body: Body): void {
   u.lacunarity.value = t.lacunarity;
   u.gain.value = t.gain;
   u.offset.value.set(t.offset[0], t.offset[1], t.offset[2]);
-  u.radius.value = body.radius;
+  u.radius.value = ellipsoidMeanRadius(body);
 }
 
 /**
@@ -125,13 +125,22 @@ function tangentTo(dir: Vec3Node): Vec3Node {
  * Four extra taps of `surfaceHeight` along two tangents give the tangential
  * gradient, converted from "metres of height per radian" to "metres per metre
  * of arc" by dividing through the radius. With `amplitude` at zero every tap
- * returns zero and this collapses to `dir` exactly — which is why the stage-01
- * reference sphere is a true sphere and not a noisy one.
+ * returns zero and this collapses to `baseNormal` exactly — which is why a body
+ * with no relief comes out perfectly smooth.
+ *
+ * `dir` is the direction from the centre, which is what the height field is a
+ * function of. `baseNormal` is which way the ground faces before any relief:
+ * the same thing on a sphere, but tilted away from `dir` by up to 11.5
+ * arcminutes on Earth and a degree and a half on Saturn. The gradient is built
+ * in the plane across `dir` and applied to `baseNormal`; the two planes differ
+ * by that same fraction of a degree, which is far below the accuracy of a
+ * four-tap difference.
  *
  * `angularStep` should be about one vertex spacing, in radians.
  */
 export function surfaceNormalNode(
   dir: Vec3Node,
+  baseNormal: Vec3Node,
   u: HeightUniforms,
   angularStep: FloatNode,
 ): Vec3Node {
@@ -149,5 +158,5 @@ export function surfaceNormalNode(
 
   const arc = step.mul(2).mul(u.radius);
   const grad = t1.mul(hx.div(arc)).add(t2.mul(hy.div(arc)));
-  return normalize(d.sub(grad)) as Vec3Node;
+  return normalize(vec3(baseNormal).sub(grad)) as Vec3Node;
 }

@@ -83,6 +83,27 @@ const SHOTS = [
 /** The same shot at several exposures, to show what exposure actually does. */
 const EXPOSURE_LADDER = [-4, -2, 0, 2, 4];
 
+/**
+ * The rotation, as four moments of one day.
+ *
+ * A featureless grey ellipsoid cannot show that it turns: with a fixed camera
+ * and a fixed sun, every hour looks exactly alike. So this series switches the
+ * height field on — the relief is what carries the rotation — and **exaggerates
+ * it far past anything real**: 240 km of it, where Earth's true range from the
+ * Mariana Trench to Everest is 20 km. At true scale the relief is a fifth of a
+ * percent of the radius and simply invisible from here.
+ *
+ * That exaggeration is the whole point of the series and has to be said out
+ * loud in the caption. What the ground actually looks like is Teil 2.4; this
+ * only shows that it turns with the body instead of sliding across it.
+ *
+ * A sidereal day is 86 164 s; these are four moments spread across one.
+ */
+const DAY_SECONDS = 86_164.0905;
+const ROTATION_SERIES = [0, 0.25, 0.5, 0.75];
+const ROTATION_RELIEF_SCALE = 20;
+const ROTATION_PHASE_DEGREES = 62;
+
 function log(message) {
   process.stdout.write(`${message}\n`);
 }
@@ -146,6 +167,52 @@ async function main() {
         ev100: metered + stops,
       });
     }
+
+    // ---- the rotation, over one day -------------------------------------
+    const rotationSun = sunAtPhaseAngle(ROTATION_PHASE_DEGREES);
+    await page.evaluate((sun) => window.__planet.setSunDirection(sun[0], sun[1], sun[2]), rotationSun);
+    await page.evaluate(() => window.__planet.setAltitude(1.2e7));
+    await page.evaluate(() => window.__planet.setTilt(0));
+    await page.evaluate((k) => window.__planet.setHeightScale(k), ROTATION_RELIEF_SCALE);
+    await page.evaluate((ev) => window.__planet.setEv100(ev), metered);
+
+    for (const fraction of ROTATION_SERIES) {
+      const hours = fraction * 24;
+      const name = `drehung-${String(Math.round(hours)).padStart(2, '0')}h`;
+      log(`${name} …`);
+      await page.evaluate((seconds) => window.__planet.setTime(seconds), fraction * DAY_SECONDS);
+      await stepFrames(page, 200);
+      await page.screenshot({ path: join(OUT, `${name}.png`) });
+      index.push({
+        name,
+        caption:
+          `Nach ${hours.toFixed(0)} Stunden. Gleiche Kamera, gleiche Sonne — nur der Körper hat ` +
+          'sich gedreht. Relief 20-fach überhöht (240 km), sonst wäre nichts zu sehen.',
+        altitude: 1.2e7,
+        phaseDegrees: ROTATION_PHASE_DEGREES,
+        file: `${name}.png`,
+        ev100: metered,
+      });
+    }
+
+    // ---- the shape, over the pole ---------------------------------------
+    // Straight down the rotation axis, where a flattened body shows its short
+    // radius and a sphere would look identical to every other view.
+    log('06-pol …');
+    await page.evaluate(() => window.__planet.setHeightScale(0));
+    await page.evaluate(() => window.__planet.setTime(0));
+    await page.evaluate((sun) => window.__planet.setSunDirection(sun[0], sun[1], sun[2]), [0.3, 0.9, 0.3]);
+    await page.evaluate(() => window.__planet.setAltitude(1.2e7));
+    await stepFrames(page, 240);
+    await page.screenshot({ path: join(OUT, '06-pol.png') });
+    index.push({
+      name: '06-pol',
+      caption: 'Sonne fast von oben. Die Achsneigung von 23.4 Grad steht im Bild.',
+      altitude: 1.2e7,
+      phaseDegrees: 0,
+      file: '06-pol.png',
+      ev100: metered,
+    });
 
     await setChromeVisible(page, true);
   } finally {

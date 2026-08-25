@@ -15,7 +15,13 @@
  * strategy is testable in Node against a fake builder.
  */
 
-import { Vec3d, type Body } from '@planet/core';
+import {
+  Vec3d,
+  ellipsoidMeanRadius,
+  ellipsoidPolarRadius,
+  type Body,
+  type BodyPose,
+} from '@planet/core';
 import {
   childKey,
   distanceToPatch,
@@ -82,6 +88,17 @@ export interface ViewParams {
   readonly bodyCenter: Vec3d;
   /** Unit forward vector of the camera, world axes. */
   readonly forward: Vec3d;
+  /**
+   * Which way the body is currently pointing. Optional: without it the body is
+   * treated as not turning, which is what the tests of the quadtree itself
+   * want.
+   *
+   * The quadtree lives in the body's own frame — a tile sits over the same
+   * piece of ground no matter how far the planet has turned — so the camera is
+   * moved into that frame once per frame rather than every node being moved out
+   * of it.
+   */
+  readonly pose?: BodyPose | undefined;
   /** Vertical field of view, radians. */
   readonly fovY: number;
   /** Viewport width / height. */
@@ -167,6 +184,16 @@ export class LodScheduler<T> {
   private quietFrames = 0;
   /** Floor on the distance used for the error, so a grazing tile stays finite. */
   private readonly minDistance: number;
+  /**
+   * Reciprocals of the outermost surface radii, equatorial and polar.
+   *
+   * Multiplying a point by these squashes the body into a unit sphere, which is
+   * what makes the horizon test exact on a body that is not round — see
+   * `isVisible`. Both include the terrain amplitude, so the shell they describe
+   * is outside every mountain.
+   */
+  private readonly invEquatorial: number;
+  private readonly invPolar: number;
 
   private readonly stat: LodStats = {
     frame: 0,
@@ -189,8 +216,8 @@ export class LodScheduler<T> {
   };
 
   private readonly scratchToNode = new Vec3d();
-  private readonly scratchToCam = new Vec3d();
   private readonly cameraLocal = new Vec3d();
+  private readonly forwardLocal = new Vec3d();
 
   constructor(
     body: Body,
@@ -206,7 +233,13 @@ export class LodScheduler<T> {
       throw new RangeError('LodScheduler: buildBudgetPerFrame must be at least 1');
     }
     // One metre, or a hundredth of the deepest tile, whichever is smaller.
-    this.minDistance = Math.min(1, (Math.PI * body.radius) / 2 ** (this.config.maxDepth + 8));
+    this.minDistance = Math.min(
+      1,
+      (Math.PI * ellipsoidMeanRadius(body)) / 2 ** (this.config.maxDepth + 8),
+    );
+    const relief = body.terrain.amplitude;
+    this.invEquatorial = 1 / (body.equatorialRadius + relief);
+    this.invPolar = 1 / (ellipsoidPolarRadius(body) + relief);
     this.roots = rootKeys().map((key) => this.createNode(key));
     this.residentCount = this.roots.length;
   }
@@ -267,14 +300,20 @@ export class LodScheduler<T> {
       Math.hypot(Math.tan(view.fovY / 2) * view.aspect, Math.tan(view.fovY / 2)),
     );
 
-    // Node bounds are body-centred, so the camera moves into that space once,
-    // in float64, instead of every node moving into world space.
+    // Node bounds are body-fixed, so the camera moves into that frame once, in
+    // float64, instead of every node moving out of it.
     const cameraLocal = this.cameraLocal.subVectors(view.cameraPosition, view.bodyCenter);
+    const forwardLocal = this.forwardLocal.copy(view.forward);
+    if (view.pose) {
+      view.pose.toBody(cameraLocal, cameraLocal);
+      view.pose.toBody(forwardLocal, forwardLocal);
+    }
     const cameraDistanceFromCentre = cameraLocal.length();
 
     const ctx: TraversalContext = {
       view,
       cameraLocal,
+      forwardLocal,
       pixelsPerRadian,
       halfDiagonal,
       cameraDistanceFromCentre,
@@ -411,8 +450,7 @@ export class LodScheduler<T> {
   private screenError(node: LodNode<T>, ctx: TraversalContext): number {
     const distance = Math.max(
       this.minDistance,
-      distanceToPatch(node.bounds, this.body.radius, ctx.cameraLocal) -
-        this.body.terrain.amplitude,
+      distanceToPatch(node.bounds, this.body, ctx.cameraLocal) - this.body.terrain.amplitude,
     );
     return (node.geometricError * ctx.pixelsPerRadian) / distance;
   }
@@ -426,19 +464,29 @@ export class LodScheduler<T> {
 
     if (this.config.frustumCulling) {
       const angularRadius = Math.asin(Math.min(1, node.bounds.radius / distance));
-      const cosAngle = Math.min(1, Math.max(-1, toNode.dot(ctx.view.forward) / distance));
+      const cosAngle = Math.min(1, Math.max(-1, toNode.dot(ctx.forwardLocal) / distance));
       if (Math.acos(cosAngle) - angularRadius > ctx.halfDiagonal) return false;
     }
 
     if (this.config.horizonCulling) {
-      const d = ctx.cameraDistanceFromCentre;
-      if (d > this.body.radius) {
-        // The horizon circle sits at R^2 / d above the centre, along the
-        // camera direction. Everything below that plane is on the far side.
-        const toCam = this.scratchToCam.copy(ctx.cameraLocal).scale(1 / d);
-        const projection = node.bounds.center.dot(toCam);
-        const horizon = (this.body.radius * this.body.radius) / d;
-        if (projection + node.bounds.radius < horizon) return false;
+      // A flattened body has no single horizon: the limb is an ellipse, and
+      // where it falls depends on which way the camera is looking. Rather than
+      // approximate it, squash the whole problem — divide through by the two
+      // radii and the body becomes a unit sphere, where the horizon is the
+      // plane `dot(x, camera) = 1` and the test is one dot product.
+      const cx = ctx.cameraLocal.x * this.invEquatorial;
+      const cy = ctx.cameraLocal.y * this.invPolar;
+      const cz = ctx.cameraLocal.z * this.invEquatorial;
+      const cLengthSq = cx * cx + cy * cy + cz * cz;
+      if (cLengthSq > 1) {
+        const px = node.bounds.center.x * this.invEquatorial;
+        const py = node.bounds.center.y * this.invPolar;
+        const pz = node.bounds.center.z * this.invEquatorial;
+        // The squash turns the node's bounding sphere into an ellipsoid too.
+        // Growing it by the largest of the two scale factors bounds it, and
+        // errs towards keeping a tile rather than dropping a visible one.
+        const r = node.bounds.radius * this.invPolar;
+        if (px * cx + py * cy + pz * cz < 1 - r * Math.sqrt(cLengthSq)) return false;
       }
     }
 
@@ -515,8 +563,10 @@ export class LodScheduler<T> {
 
 interface TraversalContext {
   readonly view: ViewParams;
-  /** Camera position relative to the body's centre, float64. */
+  /** Camera position in the body's own frame, float64. */
   readonly cameraLocal: Vec3d;
+  /** Camera forward direction in the body's own frame. */
+  readonly forwardLocal: Vec3d;
   /** Pixels subtended by one radian at the centre of the viewport. */
   readonly pixelsPerRadian: number;
   /** Half-angle of the view cone's diagonal, radians. */

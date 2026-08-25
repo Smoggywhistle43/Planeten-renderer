@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Vec3d, referenceBody } from '@planet/core';
+import { BodyPose, Vec3d, referenceBody, surfaceRadius } from '@planet/core';
 import {
   DEFAULT_LOD_CONFIG,
   LodScheduler,
@@ -66,8 +66,9 @@ class InstantBuilder implements TileBuilder<string> {
   }
 }
 
+/** Straight over the equator on the +X side, at a given height. */
 function viewFrom(altitude: number, screenHeight = 1080): ViewParams {
-  const distance = EARTH.radius + altitude;
+  const distance = surfaceRadius(EARTH, new Vec3d(1, 0, 0)) + altitude;
   return {
     cameraPosition: new Vec3d(distance, 0, 0),
     bodyCenter: new Vec3d(0, 0, 0),
@@ -230,7 +231,7 @@ describe('LodScheduler', () => {
         buildBudgetPerFrame: 64,
         maxDepth: 20,
       });
-      const position = dir.clone().scale(EARTH.radius + 1e3);
+      const position = dir.clone().scale(surfaceRadius(EARTH, dir) + 1e3);
       const view: ViewParams = {
         cameraPosition: position,
         bodyCenter: new Vec3d(0, 0, 0),
@@ -427,3 +428,143 @@ async function makeSchedulerWithFake(
   await priming;
   return scheduler;
 }
+
+describe('the scheduler on a body that turns and is not round', () => {
+  const SPHERE = { ...EARTH, equatorialRadius: 6_371_008.771, flattening: 0 };
+
+  /** Run to a standstill and report what was selected. */
+  async function settle(
+    body: typeof EARTH,
+    view: ViewParams,
+    config: Partial<LodConfig> = {},
+  ): Promise<{ tiles: number; depth: number; ids: string[] }> {
+    const builder = new InstantBuilder();
+    const scheduler = new LodScheduler(body, builder, {
+      buildBudgetPerFrame: 64,
+      maxDepth: 10,
+      ...config,
+    });
+    await scheduler.primeRoots();
+    for (let i = 0; i < 400; i++) {
+      scheduler.update(view);
+      await Promise.resolve();
+    }
+    const ids = scheduler.selected.map((n) => nodeId(n.key)).sort();
+    const result = { tiles: scheduler.stats.selectedNodes, depth: scheduler.stats.maxSelectedDepth, ids };
+    scheduler.dispose();
+    return result;
+  }
+
+  it('keeps the same tiles over a mid-latitude point as a sphere would', async () => {
+    // A 1/298 flattening must not shift the whole tree. If this ever diverges
+    // it is a bug in the shape maths, not a consequence of the shape.
+    const dir = new Vec3d(0.69, 0.33, 0.64).normalize();
+    const view = (body: typeof EARTH): ViewParams => ({
+      cameraPosition: dir.clone().scale(surfaceRadius(body, dir) + 1e4),
+      bodyCenter: new Vec3d(0, 0, 0),
+      forward: dir.clone().negate(),
+      fovY: (50 * Math.PI) / 180,
+      aspect: 16 / 9,
+      screenHeight: 1080,
+    });
+    const round = await settle(SPHERE, view(SPHERE));
+    const flat = await settle(EARTH, view(EARTH));
+    expect(flat.depth).toBe(round.depth);
+    expect(flat.tiles).toBe(round.tiles);
+  }, 60_000);
+
+  it('does not cull the ground under a camera sitting over the pole', async () => {
+    // The failure mode a single-radius horizon test produces: over the pole the
+    // real surface is 21 km closer than an equatorial-radius sphere, so the
+    // horizon plane lands above the ground and takes the tile the camera is
+    // looking straight at with it.
+    const up = new Vec3d(0, 1, 0);
+    const view: ViewParams = {
+      cameraPosition: up.clone().scale(surfaceRadius(EARTH, up) + 5e3),
+      bodyCenter: new Vec3d(0, 0, 0),
+      forward: up.clone().negate(),
+      fovY: (50 * Math.PI) / 180,
+      aspect: 16 / 9,
+      screenHeight: 1080,
+    };
+    const result = await settle(EARTH, view);
+    expect(result.tiles).toBeGreaterThan(0);
+    // Face 2 is the +Y cap: the ground directly below has to be in the list.
+    expect(result.ids.some((id) => id.startsWith('f2'))).toBe(true);
+
+    // And it must be selected at the same depth as the identical camera over
+    // the equator, where no radius shortcut could have gone wrong.
+    const east = new Vec3d(1, 0, 0);
+    const overEquator = await settle(EARTH, {
+      ...view,
+      cameraPosition: east.clone().scale(surfaceRadius(EARTH, east) + 5e3),
+      forward: east.clone().negate(),
+    });
+    expect(result.depth).toBe(overEquator.depth);
+  }, 60_000);
+
+  it('culls as tightly on the ellipsoid as on the sphere', async () => {
+    const dir = new Vec3d(0.69, 0.33, 0.64).normalize();
+    const view = (body: typeof EARTH): ViewParams => ({
+      cameraPosition: dir.clone().scale(surfaceRadius(body, dir) + 1e3),
+      bodyCenter: new Vec3d(0, 0, 0),
+      forward: dir.clone().negate(),
+      fovY: (50 * Math.PI) / 180,
+      aspect: 16 / 9,
+      screenHeight: 2160,
+    });
+    const round = await settle(SPHERE, view(SPHERE));
+    const flat = await settle(EARTH, view(EARTH));
+    // An earlier version used the largest radius everywhere and kept 40 % more
+    // tiles at the limb than it needed to.
+    expect(flat.tiles).toBeLessThanOrEqual(round.tiles + 1);
+  }, 60_000);
+
+  it('selects the same ground however far the body has turned', async () => {
+    // The quadtree lives in the body's frame. A camera parked over one spot on
+    // the ground must get the same tiles at every hour of the day — otherwise
+    // the tree is being rebuilt as the planet spins.
+    const bodyFixedUp = new Vec3d(0.6, 0.5, 0.62).normalize();
+    const results: string[][] = [];
+    for (const seconds of [0, 12_345, 43_082, 86_164]) {
+      const pose = new BodyPose().update(EARTH, seconds);
+      const worldUp = pose.toWorld(bodyFixedUp);
+      const view: ViewParams = {
+        cameraPosition: worldUp.clone().scale(surfaceRadius(EARTH, bodyFixedUp) + 2e4),
+        bodyCenter: new Vec3d(0, 0, 0),
+        pose,
+        forward: worldUp.clone().negate(),
+        fovY: (50 * Math.PI) / 180,
+        aspect: 16 / 9,
+        screenHeight: 1080,
+      };
+      results.push((await settle(EARTH, view)).ids);
+    }
+    for (const ids of results) expect(ids).toEqual(results[0]);
+    expect(results[0]?.length).toBeGreaterThan(3);
+  }, 60_000);
+
+  it('follows the ground when the camera stays put and the body turns under it', async () => {
+    // The other half of the same coin: a camera fixed in space must see a
+    // different piece of ground as the planet rotates beneath it.
+    const worldUp = new Vec3d(1, 0, 0);
+    const position = worldUp.clone().scale(EARTH.equatorialRadius + 2e4);
+    const at = async (seconds: number): Promise<string[]> => {
+      const pose = new BodyPose().update(EARTH, seconds);
+      return (
+        await settle(EARTH, {
+          cameraPosition: position,
+          bodyCenter: new Vec3d(0, 0, 0),
+          pose,
+          forward: worldUp.clone().negate(),
+          fovY: (50 * Math.PI) / 180,
+          aspect: 16 / 9,
+          screenHeight: 1080,
+        })
+      ).ids;
+    };
+    const noon = await at(0);
+    const sixHoursLater = await at(21_541);
+    expect(sixHoursLater).not.toEqual(noon);
+  }, 60_000);
+});

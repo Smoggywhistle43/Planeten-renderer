@@ -31,16 +31,20 @@
  * Usage:  pnpm acceptance  [--fast] [--headed]
  */
 
-import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
-import { extname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { chromium } from 'playwright';
-
-const ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
-const DIST = join(ROOT, 'apps/explorer/dist');
-const ARTIFACTS = join(ROOT, 'artifacts');
+import {
+  ARTIFACTS,
+  CHROMIUM_ARGS,
+  DIST,
+  SWIZZLE_SHIM,
+  buildExplorer,
+  findChromium,
+  serveDist,
+  setChromeVisible,
+  stepFrames,
+} from './lib/explorer-page.mjs';
 
 const FAST = process.argv.includes('--fast');
 const HEADED = process.argv.includes('--headed');
@@ -61,107 +65,10 @@ const SETTLE_FRAMES = FAST ? 30 : 150;
 /** Mirrors DEFAULT_LOD_CONFIG.errorThresholdPixels in @planet/render. */
 const DEFAULT_ERROR_THRESHOLD_PX = 2;
 
-const CHROMIUM_ARGS = [
-  '--enable-unsafe-webgpu',
-  '--enable-unsafe-swiftshader',
-  '--use-angle=swiftshader',
-  '--enable-features=Vulkan',
-  '--use-vulkan=swiftshader',
-  '--disable-dev-shm-usage',
-  '--no-sandbox',
-];
-
-/**
- * Compatibility shim for an old Chromium, applied to the PAGE only — the engine
- * is not modified.
- *
- * three r185 sets `swizzle: 'rgba'` (the identity swizzle) on every
- * GPUTextureViewDescriptor. Chromium 141 implements an earlier draft where that
- * key had to be a dictionary, and rejects the string outright. Newer Chromium
- * and current Safari accept it, so this wrapper detects the rejection once and
- * only then drops the key, which is a no-op because the value is the identity.
- *
- * If it ever fires on a current browser, that is a finding, not a workaround —
- * the report records whether it was needed.
- */
-const SWIZZLE_SHIM = () => {
-  if (typeof GPUTexture === 'undefined') return;
-  const original = GPUTexture.prototype.createView;
-  let stripping = false;
-  const without = (descriptor) => {
-    const copy = {};
-    for (const key in descriptor) {
-      if (key === 'swizzle') continue;
-      copy[key] = descriptor[key];
-    }
-    return copy;
-  };
-  GPUTexture.prototype.createView = function createView(descriptor) {
-    if (descriptor && stripping && 'swizzle' in descriptor) {
-      return original.call(this, without(descriptor));
-    }
-    try {
-      return original.call(this, descriptor);
-    } catch (error) {
-      if (descriptor && 'swizzle' in descriptor && /swizzle/i.test(String(error))) {
-        stripping = true;
-        window.__swizzleShimApplied = true;
-        return original.call(this, without(descriptor));
-      }
-      throw error;
-    }
-  };
-};
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.map': 'application/json; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-};
-
 function log(message) {
   process.stdout.write(`${message}\n`);
 }
 
-function buildExplorer() {
-  log('building explorer …');
-  const result = spawnSync('pnpm', ['--filter', '@planet/explorer', 'build'], {
-    cwd: ROOT,
-    stdio: 'inherit',
-  });
-  if (result.status !== 0) throw new Error('explorer build failed');
-}
-
-function serveDist() {
-  const server = createServer((request, response) => {
-    const url = new URL(request.url ?? '/', 'http://localhost');
-    const path = url.pathname === '/' ? '/index.html' : url.pathname;
-    const file = join(DIST, path);
-    if (path === '/favicon.ico') {
-      response.writeHead(204).end();
-      return;
-    }
-    if (!file.startsWith(DIST) || !existsSync(file)) {
-      response.writeHead(404).end('not found');
-      return;
-    }
-    response.writeHead(200, { 'content-type': MIME[extname(file)] ?? 'application/octet-stream' });
-    createReadStream(file).pipe(response);
-  });
-  return new Promise((done) => {
-    server.listen(0, '127.0.0.1', () => done({ server, port: server.address().port }));
-  });
-}
-
-// ---------------------------------------------------------- in-page probe ---
-
-/**
- * Runs inside the browser. Copies the WebGPU canvas into a 2D canvas and
- * reduces it to numbers, so only a few floats cross the boundary per frame.
- */
 const PROBE_SOURCE = `(() => {
   const canvas = document.getElementById('view');
   let scratch = null;
@@ -241,6 +148,12 @@ const PROBE_SOURCE = `(() => {
     };
 
     const rows = new Array(w).fill(-1);
+    // The lower edge as well as the upper one. The horizon test only ever wants
+    // the top, but fitting an ellipse to the top arc alone is under-determined:
+    // five unknowns, and half the outline missing. On a 29-pixel disc that read
+    // the flattening as 0.051 instead of 0.0034 — the fit was free to lean the
+    // conic any way it liked.
+    const lowerRows = new Array(w).fill(-1);
     let withTransition = 0;
     let minRow = Infinity;
     let maxRow = -Infinity;
@@ -259,6 +172,16 @@ const PROBE_SOURCE = `(() => {
         withTransition++;
         if (rows[x] < minRow) minRow = rows[x];
         if (rows[x] > maxRow) maxRow = rows[x];
+        break;
+      }
+      for (let y = h - 1; y >= 0; y--) {
+        if (lumaAt(x, y) <= SKY) continue;
+        let frac = 0;
+        if (y - 1 >= 0) {
+          const full = lumaAt(x, y - 1);
+          if (full > SKY) frac = 1 - Math.min(1, lumaAt(x, y) / full);
+        }
+        lowerRows[x] = y - frac;
         break;
       }
     }
@@ -305,35 +228,87 @@ const PROBE_SOURCE = `(() => {
     const hi = xs[Math.ceil(xs.length * 0.94) - 1];
     for (let x = lo; x <= hi; x++) {
       if (rows[x] >= 0 && rows[x] > 0.5) points.push([x, rows[x]]);
+      // Only if the two edges are actually distinct: near the flanks the top
+      // and bottom collapse onto the same pixel and would be counted twice.
+      if (lowerRows[x] >= 0 && lowerRows[x] < h - 1.5 && lowerRows[x] - rows[x] > 1.5) {
+        points.push([x, lowerRows[x]]);
+      }
     }
     if (points.length < 24) {
       return { mode: 'none', reason: 'too few usable boundary points', columns: points.length };
     }
 
-    // Kasa circle fit: x^2 + y^2 = 2ax + 2by + c, linear in (a, b, c).
-    let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, sz = 0, sxz = 0, syz = 0;
+    // A rotating body is an ellipsoid, so its outline is an ellipse, not a
+    // circle. A circle fit would report the flattening itself as error — on
+    // Earth 0.34 % of the radius, which is larger than the tolerance this test
+    // is trying to hold. So: fit the general conic
+    //
+    //     A x^2 + B xy + C y^2 + D x + E y = 1
+    //
+    // which is linear in its five unknowns. Points are centred and scaled
+    // first, or the normal equations are hopeless at pixel coordinates in the
+    // hundreds.
     const n = points.length;
-    for (const [x, y] of points) {
-      const z = x * x + y * y;
-      sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
-      sz += z; sxz += x * z; syz += y * z;
-    }
-    const m = [
-      [sxx, sxy, sx],
-      [sxy, syy, sy],
-      [sx, sy, n],
-    ];
-    const rhs = [sxz, syz, sz];
-    const sol = solve3(m, rhs);
-    if (!sol) return { mode: 'none', reason: 'circle fit is singular', columns: n };
-    const cx = sol[0] / 2;
-    const cy = sol[1] / 2;
-    const r = Math.sqrt(Math.max(0, sol[2] + cx * cx + cy * cy));
+    let mx = 0;
+    let my = 0;
+    for (const [x, y] of points) { mx += x; my += y; }
+    mx /= n;
+    my /= n;
+    let scale = 0;
+    for (const [x, y] of points) scale += (x - mx) ** 2 + (y - my) ** 2;
+    scale = Math.sqrt(scale / n) || 1;
 
+    const normal = [];
+    for (let r = 0; r < 5; r++) normal.push([0, 0, 0, 0, 0, 0]);
+    for (const [x, y] of points) {
+      const u = (x - mx) / scale;
+      const v = (y - my) / scale;
+      const basis = [u * u, u * v, v * v, u, v];
+      for (let r = 0; r < 5; r++) {
+        for (let c = 0; c < 5; c++) normal[r][c] += basis[r] * basis[c];
+        normal[r][5] += basis[r];
+      }
+    }
+    const conic = solveN(normal, 5);
+    if (!conic) return { mode: 'none', reason: 'ellipse fit is singular', columns: n };
+
+    const [A, B, C, D, E] = conic;
+    // Centre: where both partial derivatives vanish.
+    const det = 4 * A * C - B * B;
+    if (!(det > 0)) {
+      return { mode: 'none', reason: 'fitted conic is not an ellipse', columns: n };
+    }
+    const ux = (B * E - 2 * C * D) / det;
+    const uy = (B * D - 2 * A * E) / det;
+    // Value of the quadratic part on the outline, once the centre is the
+    // origin. Shifting the conic to its own centre kills the linear terms and
+    // leaves q(w) = -Q(centre); at the centre the gradient vanishes, which
+    // collapses that to 1 - (D cx + E cy) / 2.
+    const k = 1 - (D * ux + E * uy) / 2;
+    if (!(k > 0)) return { mode: 'none', reason: 'degenerate ellipse fit', columns: n };
+
+    // Semi-axes from the eigenvalues of [[A, B/2], [B/2, C]] scaled by k.
+    const trace = A + C;
+    const gap = Math.sqrt(Math.max(0, (A - C) * (A - C) + B * B));
+    const bigEigen = (trace + gap) / 2;
+    const smallEigen = (trace - gap) / 2;
+    if (!(smallEigen > 0)) return { mode: 'none', reason: 'degenerate ellipse fit', columns: n };
+    const semiMinor = Math.sqrt(k / bigEigen) * scale;
+    const semiMajor = Math.sqrt(k / smallEigen) * scale;
+    const tiltRad = 0.5 * Math.atan2(B, A - C);
+
+    // Residual: how far each boundary point sits from the fitted outline,
+    // measured along the ray from the ellipse's centre. Same units and same
+    // meaning as the circle version it replaces.
     let maxResidual = 0;
     let sumSq = 0;
     for (const [x, y] of points) {
-      const d = Math.abs(Math.hypot(x - cx, y - cy) - r);
+      const wx = (x - mx) / scale - ux;
+      const wy = (y - my) / scale - uy;
+      const q = A * wx * wx + B * wx * wy + C * wy * wy;
+      if (!(q > 0)) continue;
+      const reach = Math.hypot(wx, wy);
+      const d = Math.abs(reach * (1 - Math.sqrt(k / q))) * scale;
       sumSq += d * d;
       if (d > maxResidual) maxResidual = d;
     }
@@ -341,13 +316,41 @@ const PROBE_SOURCE = `(() => {
     return {
       mode: 'disk',
       columns: n,
-      fitCentreX: cx,
-      fitCentreY: cy,
-      fitRadiusPx: r,
+      fitCentreX: ux * scale + mx,
+      fitCentreY: uy * scale + my,
+      semiMajorPx: semiMajor,
+      semiMinorPx: semiMinor,
+      // What the picture says the body's flattening is. Compare with the body's.
+      fitFlattening: semiMajor > 0 ? (semiMajor - semiMinor) / semiMajor : 0,
+      tiltDegrees: (tiltRad * 180) / Math.PI,
+      // Kept under the old name so the report and its thresholds still read the
+      // same field; it is now the distance to an ellipse rather than a circle.
+      fitRadiusPx: semiMajor,
       maxRadialResidualPx: maxResidual,
       rmsRadialResidualPx: Math.sqrt(sumSq / n),
     };
   };
+
+  /** Gauss-Jordan on an n by (n+1) augmented matrix. Null if singular. */
+  function solveN(rows, n) {
+    const m = rows.map((r) => r.slice());
+    for (let col = 0; col < n; col++) {
+      let pivot = col;
+      for (let r = col + 1; r < n; r++) {
+        if (Math.abs(m[r][col]) > Math.abs(m[pivot][col])) pivot = r;
+      }
+      if (Math.abs(m[pivot][col]) < 1e-12) return null;
+      const tmp = m[col]; m[col] = m[pivot]; m[pivot] = tmp;
+      for (let r = 0; r < n; r++) {
+        if (r === col) continue;
+        const f = m[r][col] / m[col][col];
+        for (let c = col; c <= n; c++) m[r][c] -= f * m[col][c];
+      }
+    }
+    const out = [];
+    for (let r = 0; r < n; r++) out.push(m[r][n] / m[r][r]);
+    return out;
+  }
 
   function solve3(a, b) {
     const m = [
@@ -475,36 +478,6 @@ function expectedRadiusPx(radius, distance, fovY, heightPx) {
   return focal * Math.tan(halfAngle);
 }
 
-async function setChromeVisible(page, visible) {
-  await page.evaluate((v) => {
-    for (const id of ['overlay', 'help']) {
-      const el = document.getElementById(id);
-      if (el) el.style.display = v ? '' : 'none';
-    }
-  }, visible);
-}
-
-/** Run `count` frames in one round trip, pumping the build queue between them. */
-async function stepFrames(page, count, deltaSeconds) {
-  await page.evaluate(
-    async ([n, dt]) => {
-      for (let i = 0; i < n; i++) {
-        window.__planet.renderFrame(dt);
-        await window.__planet.pump();
-      }
-    },
-    [count, deltaSeconds],
-  );
-}
-
-/**
- * Render one frame and read the canvas back inside the same task.
- *
- * A WebGPU canvas stops being readable once the compositor presents it, so
- * anything that lets a task boundary slip in between gets an intermittently
- * black image — which reads as "the planet vanished" rather than "the readback
- * was late".
- */
 async function renderAndProbe(page) {
   return page.evaluate(() => {
     window.__planet.renderFrame(0);
@@ -529,11 +502,11 @@ async function main() {
   rmSync(ARTIFACTS, { recursive: true, force: true });
   mkdirSync(ARTIFACTS, { recursive: true });
 
-  buildExplorer();
+  buildExplorer(log);
   const { server, port } = await serveDist();
   log(`serving ${DIST} on 127.0.0.1:${port}`);
 
-  const executablePath = process.env.PLANET_CHROMIUM_PATH;
+  const executablePath = findChromium();
   const browser = await chromium.launch({
     headless: !HEADED,
     args: CHROMIUM_ARGS,
@@ -578,11 +551,20 @@ async function main() {
 
     // ---- criterion 3, part one: the renderer is the one we asked for -------
     const depth = await page.evaluate(() => window.__planet.depth);
-    const body = await page.evaluate(() => ({
-      id: window.__planet.body.id,
-      radius: window.__planet.body.radius,
-      amplitude: window.__planet.body.terrain.amplitude,
-    }));
+    const body = await page.evaluate(() => {
+      const b = window.__planet.body;
+      const polar = b.equatorialRadius * (1 - b.flattening);
+      return {
+        id: b.id,
+        equatorialRadius: b.equatorialRadius,
+        polarRadius: polar,
+        meanRadius: (2 * b.equatorialRadius + polar) / 3,
+        flattening: b.flattening,
+        rotationPeriod: b.rotationPeriod,
+        axialTilt: b.axialTilt,
+        amplitude: b.terrain.amplitude,
+      };
+    });
     report.depth = depth;
     report.body = body;
 
@@ -592,8 +574,14 @@ async function main() {
     if (depth.depthCompare !== 'greater-equal') {
       report.failures.push(`depth compare is ${depth.depthCompare}, not greater-equal`);
     }
-    if (Math.abs(body.radius - 6.371e6) > 1) {
-      report.failures.push(`body radius is ${body.radius}, not 6.371e6`);
+    // The reference body is Earth-shaped: mean radius 6371.0 km, flattening
+    // 1/298. It stopped being a sphere in Stufe 2.3, so the old "radius is
+    // 6.371e6" check would now read an undefined field and quietly pass.
+    if (!Number.isFinite(body.meanRadius) || Math.abs(body.meanRadius - 6.371e6) > 20) {
+      report.failures.push(`mean radius is ${body.meanRadius}, not 6.371e6`);
+    }
+    if (Math.abs(1 / body.flattening - 298.257223563) > 0.001) {
+      report.failures.push(`flattening is 1/${1 / body.flattening}, not 1/298.257`);
     }
 
     await page.evaluate(() => {
@@ -606,6 +594,15 @@ async function main() {
     for (const altitude of CHECKPOINTS) {
       log(`checkpoint ${altitude.toExponential(1)} m …`);
       await page.evaluate((a) => window.__planet.setAltitude(a), altitude);
+      // Light the whole disc. Every measurement below counts pixels, and a
+      // terminator in frame would turn "how big is the body" into "how much of
+      // it is in daylight" and the night side into a hole between tiles. The
+      // interesting lighting lives in `pnpm portrait`, where nothing is
+      // counted.
+      await page.evaluate(() => {
+        window.__planet.renderFrame(0);
+        window.__planet.setSunBehindCamera();
+      });
 
       // Count from the moment the camera arrives, not after a warm-up: the
       // settle time is how long the tree needs once the camera stops *there*,
@@ -639,9 +636,18 @@ async function main() {
       const stats = await page.evaluate(() => window.__planet.stats());
       peakBuilds = Math.max(peakBuilds, stats.peakBuildsPerFrame);
 
-      const distance = 6.371e6 + stats.altitude;
+      const distance = stats.distanceFromCentre;
+      // Against the equatorial radius: whatever direction an oblate body is
+      // seen from, the widest its outline ever gets is the equatorial diameter.
       const expected = expectedRadiusPx(
-        6.371e6,
+        body.equatorialRadius,
+        distance,
+        (50 * Math.PI) / 180,
+        VIEWPORT.height * PIXEL_RATIO,
+      );
+      // Area-equivalent radius of the full ellipse, for the coverage metric.
+      const expectedArea = expectedRadiusPx(
+        Math.sqrt(body.equatorialRadius * body.polarRadius),
         distance,
         (50 * Math.PI) / 180,
         VIEWPORT.height * PIXEL_RATIO,
@@ -667,6 +673,7 @@ async function main() {
         probe,
         silhouette,
         expectedRadiusPx: Number.isFinite(expected) ? expected : null,
+        expectedAreaRadiusPx: Number.isFinite(expectedArea) ? expectedArea : null,
       };
 
       // The disk metrics only mean something when the whole silhouette is in
@@ -675,14 +682,38 @@ async function main() {
       const measurable = !probe.empty && !probe.clipped && probe.radiusPx >= 24;
       entry.measurable = measurable;
 
-      if (!probe.empty && !probe.clipped && Number.isFinite(expected)) {
-        entry.radiusErrorFraction = Math.abs(probe.radiusPx - expected) / expected;
+      if (!probe.empty && !probe.clipped && Number.isFinite(expectedArea)) {
+        entry.radiusErrorFraction = Math.abs(probe.radiusPx - expectedArea) / expectedArea;
         // One pixel of rasterisation slack, on top of two percent.
-        const tolerance = Math.max(0.02, 1 / expected);
+        const tolerance = Math.max(0.02, 1 / expectedArea);
         if (entry.radiusErrorFraction > tolerance) {
           report.failures.push(
-            `at ${altitude.toExponential(1)} m the disk is ${probe.radiusPx.toFixed(1)} px, ` +
-              `expected ${expected.toFixed(1)} px for a 6.371e6 m sphere`,
+            `at ${altitude.toExponential(1)} m the disk covers ${probe.radiusPx.toFixed(1)} px ` +
+              `of area-equivalent radius, expected ${expectedArea.toFixed(1)} px`,
+          );
+        }
+      }
+
+      // Criterion 3 as a shape, not just a size: the outline of a body flattened
+      // by 1/298 is an ellipse, and the fit says which one.
+      if (silhouette?.mode === 'disk' && Number.isFinite(expected)) {
+        entry.semiMajorErrorFraction = Math.abs(silhouette.semiMajorPx - expected) / expected;
+        const tolerance = Math.max(0.02, 1 / expected);
+        if (entry.semiMajorErrorFraction > tolerance) {
+          report.failures.push(
+            `at ${altitude.toExponential(1)} m the outline is ${silhouette.semiMajorPx.toFixed(1)} px ` +
+              `across its long axis, expected ${expected.toFixed(1)} px for a ` +
+              `${body.equatorialRadius.toFixed(0)} m equatorial radius`,
+          );
+        }
+        // Seen edge-on the outline shows the full flattening; seen over a pole
+        // it shows none. Anything outside that range is a shape error. One
+        // pixel of slack, because at these sizes 1/298 is barely a pixel.
+        const slack = 1.5 / Math.max(1, silhouette.semiMajorPx);
+        if (silhouette.fitFlattening < -slack || silhouette.fitFlattening > body.flattening + slack) {
+          report.failures.push(
+            `at ${altitude.toExponential(1)} m the outline reads as flattened by ` +
+              `${silhouette.fitFlattening.toFixed(5)}, outside 0..${body.flattening.toFixed(5)}`,
           );
         }
       }
@@ -828,14 +859,18 @@ function describeSilhouette(s) {
     return `Horizont: max ${s.maxStepPx.toFixed(2)} px, Median ${s.medianStepPx.toFixed(3)} px`;
   }
   if (s.mode === 'disk') {
-    return `Kreis: max ${s.maxRadialResidualPx.toFixed(2)} px, RMS ${s.rmsRadialResidualPx.toFixed(3)} px`;
+    return (
+      `Ellipse ${s.semiMajorPx.toFixed(1)}x${s.semiMinorPx.toFixed(1)} px, ` +
+      `Abplattung ${s.fitFlattening.toFixed(4)}, ` +
+      `max ${s.maxRadialResidualPx.toFixed(2)} px, RMS ${s.rmsRadialResidualPx.toFixed(3)} px`
+    );
   }
   return `— (${s.reason ?? 'nicht messbar'})`;
 }
 
 function renderSummary(report) {
   const lines = [];
-  lines.push(`# Abnahme Stufe 01 — ${report.passed ? 'BESTANDEN' : 'FEHLGESCHLAGEN'}`);
+  lines.push(`# Abnahme Stufe 02 — ${report.passed ? 'BESTANDEN' : 'FEHLGESCHLAGEN'}`);
   lines.push('');
   lines.push(`Lauf: ${report.startedAt} → ${report.finishedAt}`);
   lines.push(`Viewport: ${report.viewport.width}x${report.viewport.height} @ dpr ${report.pixelRatio}`);
@@ -858,6 +893,25 @@ function renderSummary(report) {
     lines.push(`> User-Agent: \`${report.compat.userAgent}\``);
     lines.push('');
   }
+  if (report.body) {
+    const b = report.body;
+    lines.push('## Körper');
+    lines.push('');
+    lines.push(`- \`${b.id}\``);
+    lines.push(
+      `- Äquatorradius ${b.equatorialRadius.toFixed(0)} m, Polradius ${b.polarRadius.toFixed(0)} m, ` +
+        `Mittel ${b.meanRadius.toFixed(1)} m`,
+    );
+    lines.push(
+      `- Abplattung 1/${(1 / b.flattening).toFixed(3)} — ${(b.equatorialRadius - b.polarRadius).toFixed(0)} m Unterschied`,
+    );
+    lines.push(
+      `- Rotationsdauer ${(Math.abs(b.rotationPeriod) / 3600).toFixed(4)} h${b.rotationPeriod < 0 ? ' (rückläufig)' : ''}, ` +
+        `Achsneigung ${((b.axialTilt * 180) / Math.PI).toFixed(2)}°`,
+    );
+    lines.push(`- Reliefamplitude ${b.amplitude.toFixed(0)} m`);
+    lines.push('');
+  }
   lines.push('## Kameraflug');
   lines.push('');
   lines.push('| Höhe (m) | Radius ist/soll (px) | Abw. | Tiles | Tiefe | Fehler (px) | Builds/Frame | Einschwingen | Löcher | Speckle | Silhouette | ms |');
@@ -865,13 +919,15 @@ function renderSummary(report) {
   for (const c of report.checkpoints) {
     const r = c.probe?.empty
       ? 'leer'
-      : `${c.probe.radiusPx.toFixed(1)} / ${c.expectedRadiusPx ? c.expectedRadiusPx.toFixed(1) : '—'}${c.probe.clipped ? ' (beschnitten)' : ''}`;
+      : `${c.probe.radiusPx.toFixed(1)} / ${c.expectedAreaRadiusPx ? c.expectedAreaRadiusPx.toFixed(1) : '—'}${c.probe.clipped ? ' (beschnitten)' : ''}`;
     lines.push(
       `| ${c.altitude.toExponential(2)} | ${r} | ${
         c.radiusErrorFraction === undefined ? '—' : `${(c.radiusErrorFraction * 100).toFixed(2)}%`
       } | ${c.selectedNodes} | ${c.maxSelectedDepth} | ${c.maxSelectedErrorPixels.toFixed(2)} | ${
         c.peakBuildsPerFrame
-      }/${c.budget} | ${c.settled ? `${c.settleFrames} Frames` : 'NICHT ERREICHT'} | ${c.probe?.holes ?? '—'} | ${
+      }/${c.budget} | ${c.settled ? `${c.settleFrames} Frames` : 'NICHT ERREICHT'} | ${
+        c.measurable ? (c.probe?.holes ?? '—') : '—'
+      } | ${
         c.probe?.speckleFraction === undefined ? '—' : `${(c.probe.speckleFraction * 100).toFixed(3)}%`
       } | ${describeSilhouette(c.silhouette)} | ${c.frameMs.toFixed(1)} |`,
     );

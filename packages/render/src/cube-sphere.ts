@@ -12,7 +12,14 @@
  * factor. With it, cells across a face are within a few percent of each other.
  */
 
-import { Vec3d, type Body } from '@planet/core';
+import {
+  Vec3d,
+  curvatureRadius,
+  ellipsoidMeanRadius,
+  surfaceRadius,
+  type Body,
+  type Ellipsoid,
+} from '@planet/core';
 
 /** 0:+X 1:-X 2:+Y 3:-Y 4:+Z 5:-Z */
 export type FaceIndex = 0 | 1 | 2 | 3 | 4 | 5;
@@ -229,16 +236,35 @@ export function nodeCornerDirections(key: NodeKey): Vec3d[] {
 }
 
 /**
- * Great-circle length of the node's longer edge, in metres on a sphere of the
- * given radius. The basis for the LOD error estimate.
+ * Length of the node's longer edge along the surface, metres. The basis for the
+ * LOD error estimate.
+ *
+ * The body is not a sphere, so the radius to scale the angle by is not a
+ * constant. Averaging the surface radius over the node's corners is exact for a
+ * sphere and good to a fraction of a percent of a node edge on anything as
+ * gently flattened as a planet.
  */
-export function nodeArcLength(key: NodeKey, radius: number): number {
-  const b = nodeUvBounds(key);
+export function nodeArcLength(key: NodeKey, shape: Ellipsoid): number {
   const c = nodeCornerDirections(key);
-  void b;
   const e1 = angleBetween(c[0] as Vec3d, c[1] as Vec3d);
   const e2 = angleBetween(c[0] as Vec3d, c[2] as Vec3d);
-  return Math.max(e1, e2) * radius;
+  return Math.max(e1, e2) * nodeSurfaceRadius(key, shape);
+}
+
+/**
+ * Mean distance from the centre to the node's patch, metres.
+ *
+ * Corners *and* centre. The centre is not redundant: at depth 0 all six faces
+ * share the same eight cube corners, so a corners-only average would report the
+ * identical radius for the polar face and the equatorial one — on Earth a 21 km
+ * error, and on Saturn 6000 km.
+ */
+export function nodeSurfaceRadius(key: NodeKey, shape: Ellipsoid): number {
+  if (shape.flattening === 0) return shape.equatorialRadius;
+  const dirs = [...nodeCornerDirections(key), nodeCenterDirection(key)];
+  let sum = 0;
+  for (const dir of dirs) sum += surfaceRadius(shape, dir);
+  return sum / dirs.length;
 }
 
 function angleBetween(a: Vec3d, b: Vec3d): number {
@@ -285,8 +311,9 @@ export function nodeBounds(key: NodeKey, body: Body): NodeBounds {
     faceUvToDirection(key.face, b.u1, vm),
   ];
 
-  const center = nodeCenterDirection(key).scale(body.radius);
-  const surface = samples.map((s) => s.scale(body.radius));
+  const centreDirection = nodeCenterDirection(key);
+  const center = centreDirection.clone().scale(surfaceRadius(body, centreDirection));
+  const surface = samples.map((s) => s.clone().scale(surfaceRadius(body, s)));
   let maxDist = 0;
   for (const s of surface) {
     const d = s.distanceTo(center);
@@ -326,7 +353,7 @@ function clamp(value: number, low: number, high: number): number {
  */
 export function distanceToPatch(
   bounds: NodeBounds,
-  radius: number,
+  shape: Ellipsoid,
   pointFromCentre: Vec3d,
 ): number {
   let best = Number.POSITIVE_INFINITY;
@@ -336,13 +363,12 @@ export function distanceToPatch(
   if (n > 0) {
     const s = clamp(pointFromCentre.dot(f.u) / n, bounds.s0, bounds.s1);
     const t = clamp(pointFromCentre.dot(f.v) / n, bounds.t0, bounds.t1);
-    const closest = new Vec3d(
+    const direction = new Vec3d(
       f.normal.x + f.u.x * s + f.v.x * t,
       f.normal.y + f.u.y * s + f.v.y * t,
       f.normal.z + f.u.z * s + f.v.z * t,
-    )
-      .normalize()
-      .scale(radius);
+    ).normalize();
+    const closest = direction.clone().scale(surfaceRadius(shape, direction));
     best = closest.distanceToSq(pointFromCentre);
   }
 
@@ -373,7 +399,7 @@ export function unresolvedRelief(body: Body, cellArc: number): number {
   if (t.amplitude === 0 || cellArc <= 0) return 0;
 
   // Wavelength of octave k, in metres on the surface.
-  const baseWavelength = (2 * Math.PI * body.radius) / t.frequency;
+  const baseWavelength = (2 * Math.PI * ellipsoidMeanRadius(body)) / t.frequency;
   const nyquist = 2 * cellArc;
 
   const sum = geometricSum(t.gain, t.octaves);
@@ -403,7 +429,10 @@ function geometricSum(ratio: number, terms: number): number {
  */
 export function nodeGeometricError(key: NodeKey, body: Body, gridResolution: number): number {
   if (gridResolution <= 0) throw new RangeError('nodeGeometricError: gridResolution must be > 0');
-  const cellArc = nodeArcLength(key, body.radius) / gridResolution;
-  const sagitta = (cellArc * cellArc) / (8 * body.radius);
+  const cellArc = nodeArcLength(key, body) / gridResolution;
+  // How hard the ground bends here, not how far away the centre is. On a
+  // flattened body those differ, and the sagitta follows the bending.
+  const bend = curvatureRadius(body, nodeCenterDirection(key));
+  const sagitta = (cellArc * cellArc) / (8 * bend);
   return sagitta + unresolvedRelief(body, cellArc);
 }

@@ -1,5 +1,5 @@
 /**
- * Golden tests for stage 01.
+ * Golden tests: a fixed seed in, every generated parameter out.
  *
  * A fixed seed goes in, a JSON snapshot of every generated parameter comes out.
  * Two independent guards:
@@ -26,8 +26,13 @@ import {
 import { resolveSeedPath } from '../src/seed.ts';
 import { BODY_CLASSES } from '../src/body.ts';
 
-/** Checksum of the snapshot below. Edit by hand, never generated. */
-const STAGE_01_CHECKSUM = '0x233c912e';
+/**
+ * Checksum of the snapshot below. Edit by hand, never generated.
+ *
+ * The history of these lives in STATE.md, one row per accepted stage, so a
+ * change to world generation leaves a dated trail rather than a silent diff.
+ */
+const PARAMETER_CHECKSUM = '0xeffcac24';
 
 const HASH_VECTORS: readonly (readonly number[])[] = [
   [0],
@@ -55,7 +60,7 @@ function round(value: number, digits: number): number {
 
 function buildSnapshot(): unknown {
   return {
-    stage: '01-fundament',
+    schema: 'planeten.parameters.v2',
     hash: HASH_VECTORS.map((args) => ({
       args,
       out: `0x${hash(args[0] as number, ...args.slice(1)).toString(16).padStart(8, '0')}`,
@@ -91,15 +96,15 @@ function checksum(text: string): string {
   return `0x${h.toString(16).padStart(8, '0')}`;
 }
 
-describe('golden: stage 01 parameters', () => {
+describe('golden: generated parameters', () => {
   const json = `${JSON.stringify(buildSnapshot(), null, 2)}\n`;
 
   it('matches the committed snapshot', async () => {
-    await expect(json).toMatchFileSnapshot('./golden/stage-01.json');
+    await expect(json).toMatchFileSnapshot('./golden/parameters.json');
   });
 
   it('matches the checksum recorded in STATE.md', () => {
-    expect(checksum(json)).toBe(STAGE_01_CHECKSUM);
+    expect(checksum(json)).toBe(PARAMETER_CHECKSUM);
   });
 
   it('is reproducible inside a single run', () => {
